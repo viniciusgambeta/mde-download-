@@ -107,7 +107,9 @@ jobs:
             echo "::add-mask::$valor"
           done
 
-          npm run dist:mac 2>&1 | tee "$RUNNER_TEMP/passo-gerar.log"
+          # forceCodeSigning: se o certificado não servir, o electron-builder
+          # para e diz por quê, em vez de gerar o app sem assinatura.
+          npm run dist:mac -- -c.forceCodeSigning=true 2>&1 | tee "$RUNNER_TEMP/passo-gerar.log"
 
       - name: Gerar sem assinatura (só para teste)
         if: steps.credenciais.outputs.assinar != 'true'
@@ -190,20 +192,35 @@ jobs:
             echo "Sem Rosetta neste runner: a versão Intel não foi executada aqui."
           fi
 
-      # Se um dos passos acima falhar, o fim do registro dele vira uma anotação
-      # no topo da página da execução: dá para ver o erro sem abrir o log.
+      # Se um dos passos acima falhar, o registro deles vira anotação no topo
+      # da página da execução: dá para ver o erro sem abrir o log. Sai uma
+      # anotação com o fim de cada registro e outra com as linhas do build
+      # que falam de assinatura.
       - name: Resumir a falha
         if: failure()
         run: |
-          registro="$(ls -t "$RUNNER_TEMP"/passo-*.log 2> /dev/null | head -1 || true)"
-          if [ -z "$registro" ]; then exit 0; fi
           node -e '
             const fs = require("fs");
-            const linhas = fs.readFileSync(process.argv[1], "utf8")
-              .replace(/\x1b\[[0-9;]*m/g, "")
-              .split(/\r?\n/)
-              .filter((linha) => linha.trim());
-            const fim = linhas.join("\n").slice(-3000);
-            const codificado = fim.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
-            console.log("::error title=Fim do registro do passo que falhou::" + codificado);
-          ' "$registro"
+            const path = require("path");
+            const dir = process.argv[1];
+            const anotar = (titulo, texto) => {
+              if (!texto.trim()) return;
+              const codificado = texto.slice(-6000).replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+              console.log("::error title=" + titulo + "::" + codificado);
+            };
+            const registros = fs.readdirSync(dir)
+              .filter((nome) => /^passo-.*\.log$/.test(nome))
+              .map((nome) => ({ nome, quando: fs.statSync(path.join(dir, nome)).mtimeMs }))
+              .sort((a, b) => a.quando - b.quando);
+            for (const { nome } of registros) {
+              const linhas = fs.readFileSync(path.join(dir, nome), "utf8")
+                .replace(/\x1b\[[0-9;]*m/g, "")
+                .split(/\r?\n/)
+                .filter((linha) => linha.trim());
+              if (nome === "passo-gerar.log") {
+                const assinatura = linhas.filter((linha) => /sign|identit|notar|keychain|certific|Developer ID|CSSMERR/i.test(linha));
+                anotar("Build: linhas sobre assinatura", assinatura.slice(0, 40).join("\n").slice(0, 6000));
+              }
+              anotar("Fim do registro: " + nome, linhas.join("\n"));
+            }
+          ' "$RUNNER_TEMP"

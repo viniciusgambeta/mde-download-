@@ -1,0 +1,165 @@
+name: Build macOS
+
+# Gera o instalador (.dmg) do Me dá um Download para macOS, nas versões Apple
+# Silicon (arm64) e Intel (x64), assinado com Developer ID e notarizado pela
+# Apple. O resultado fica como artefato da execução, na aba Actions.
+#
+# As credenciais vêm dos secrets do repositório; o passo a passo para criá-las
+# está em docs/mac-build.md.
+
+on:
+  push:
+    tags: ['v*']
+    # Enquanto a versão de Mac está em teste, cada push na branch "mac" gera
+    # um instalador. Depois de juntar na main, esta linha pode sair.
+    branches: ['mac']
+  # Botão "Run workflow" na aba Actions (aparece quando este arquivo estiver
+  # na branch principal).
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-mac-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dmg:
+    name: Gerar .dmg
+    # Runner Apple Silicon. A versão Intel sai da mesma máquina.
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v7
+
+      - name: Instalar o Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      # Com todos os secrets: assina e notariza. Sem nenhum (e fora de uma
+      # tag): gera um instalador de teste, sem assinatura. Com só alguns, ou
+      # numa tag sem eles: para aqui e diz o que falta.
+      - name: Conferir credenciais
+        id: credenciais
+        env:
+          MAC_CERT_P12_BASE64: ${{ secrets.MAC_CERT_P12_BASE64 }}
+          MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          faltando=""
+          presentes=0
+          for nome in MAC_CERT_P12_BASE64 MAC_CERT_PASSWORD APPLE_API_KEY_P8 APPLE_API_KEY_ID APPLE_API_ISSUER; do
+            if [ -z "${!nome}" ]; then faltando="$faltando $nome"; else presentes=$((presentes + 1)); fi
+          done
+
+          if [ -z "$faltando" ]; then
+            echo "assinar=true" >> "$GITHUB_OUTPUT"
+            echo "sufixo=" >> "$GITHUB_OUTPUT"
+          elif [ "$presentes" -eq 0 ] && [ "$GITHUB_REF_TYPE" != "tag" ]; then
+            echo "::warning title=Instalador sem assinatura::Nenhum secret cadastrado. O .dmg gerado serve só para teste: não está assinado nem notarizado. Veja docs/mac-build.md."
+            echo "assinar=false" >> "$GITHUB_OUTPUT"
+            echo "sufixo=-SEM-ASSINATURA" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error title=Faltam secrets::Cadastre no repositório:$faltando (passo a passo em docs/mac-build.md)."
+            exit 1
+          fi
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Preparar o Cobalt
+        run: npm run setup
+
+      - name: Gerar, assinar e notarizar
+        if: steps.credenciais.outputs.assinar == 'true'
+        env:
+          # O electron-builder lê estas variáveis: o certificado (em base64)
+          # com a senha, e a chave da API da Apple usada na notarização.
+          CSC_LINK: ${{ secrets.MAC_CERT_P12_BASE64 }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          # A chave precisa estar num arquivo. Ele fica na pasta temporária do
+          # runner, que é apagada no fim da execução.
+          printf '%s\n' "$APPLE_API_KEY_P8" | tr -d '\r' > "$RUNNER_TEMP/AuthKey.p8"
+          export APPLE_API_KEY="$RUNNER_TEMP/AuthKey.p8"
+          npm run dist:mac
+
+      - name: Gerar sem assinatura (só para teste)
+        if: steps.credenciais.outputs.assinar != 'true'
+        # Assinatura "ad-hoc": o app abre, mas o macOS avisa que não conhece
+        # quem fez e pede uma liberação manual.
+        run: npm run dist:mac -- -c.mac.identity=- -c.mac.hardenedRuntime=false
+
+      - name: Conferir assinatura e notarização
+        if: steps.credenciais.outputs.assinar == 'true'
+        run: |
+          for app in dist/mac*/*.app; do
+            echo "== $app"
+            codesign --verify --deep --strict --verbose=2 "$app"
+            codesign --display --verbose=2 "$app/Contents/Resources/cobalt/node_modules/ffmpeg-static/ffmpeg" 2>&1 | grep -E "Authority|TeamIdentifier|flags|Timestamp"
+            xcrun stapler validate "$app"
+            spctl --assess --type execute --verbose=4 "$app"
+          done
+
+      - name: Publicar os instaladores
+        uses: actions/upload-artifact@v7
+        with:
+          name: MeDaUmDownload-mac${{ steps.credenciais.outputs.sufixo }}
+          path: dist/*.dmg
+          if-no-files-found: error
+
+      # Confere, no app já montado, as partes que só existem no macOS: o modo
+      # Node do Electron (usado pelo Cobalt e pelo yt-dlp), o ffmpeg embutido
+      # e o servidor local do Cobalt.
+      - name: Teste rápido do app gerado
+        run: |
+          # Uso: testar <pasta do .app> [comando na frente, ex.: arch -x86_64]
+          testar() {
+            local app helper ffmpeg cobalt porta
+            app="$(cd "$1" && pwd)"; shift
+            helper=("$app"/Contents/Frameworks/*Helper.app)
+            helper=("${helper[0]}"/Contents/MacOS/*)
+            helper="${helper[0]}"
+            cobalt="$app/Contents/Resources/cobalt"
+            ffmpeg="$cobalt/node_modules/ffmpeg-static/ffmpeg"
+            porta=9321
+
+            echo "== $app"
+            ELECTRON_RUN_AS_NODE=1 "$@" "$helper" -e "console.log('modo Node:', process.versions.node, process.arch)"
+            "$@" "$ffmpeg" -version | sed -n 1p
+
+            # O Cobalt fica no ar enquanto o "sleep" segurar a entrada dele.
+            export API_URL="http://127.0.0.1:$porta/" API_PORT="$porta" API_LISTEN_ADDRESS=127.0.0.1
+            ( cd "$cobalt" && sleep 25 | ELECTRON_RUN_AS_NODE=1 "$@" "$helper" run.mjs > "$RUNNER_TEMP/cobalt.log" 2>&1 ) &
+            for tentativa in $(seq 1 40); do
+              if curl -fsS -H "accept: application/json" "http://127.0.0.1:$porta/" > /dev/null 2>&1; then
+                echo "Cobalt respondeu."
+                wait || true
+                return 0
+              fi
+              sleep 0.5
+            done
+            echo "::error::O Cobalt não respondeu dentro do app."
+            cat "$RUNNER_TEMP/cobalt.log"
+            return 1
+          }
+
+          apps=(dist/mac-arm64/*.app)
+          testar "${apps[0]}"
+          # A versão Intel roda pelo Rosetta, se o runner tiver.
+          if arch -x86_64 /usr/bin/true 2> /dev/null; then
+            apps=(dist/mac/*.app)
+            testar "${apps[0]}" arch -x86_64
+          else
+            echo "Sem Rosetta neste runner: a versão Intel não foi executada aqui."
+          fi

@@ -15,7 +15,8 @@
   "scripts": {
     "start": "electron .",
     "setup": "node scripts/setup-cobalt.mjs",
-    "dist": "electron-builder --win nsis"
+    "dist": "electron-builder --win nsis",
+    "dist:mac": "electron-builder --mac dmg --arm64 --x64 --publish never"
   },
   "devDependencies": {
     "electron": "^45.3.1",
@@ -45,6 +46,19 @@
       "createStartMenuShortcut": true,
       "shortcutName": "Me dá um Download",
       "artifactName": "MeDaUmDownload-Setup-${version}.${ext}"
+    },
+    "mac": {
+      "appId": "com.medaumexemplo.downloader",
+      "target": "dmg",
+      "icon": "build/icon-mac.png",
+      "category": "public.app-category.utilities",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
+    },
+    "dmg": {
+      "artifactName": "MeDaUmDownload-${version}-mac-${arch}.${ext}"
     }
   }
 }

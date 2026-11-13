@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+        Permissões do app no macOS com o "hardened runtime" ligado (exigência
+        da notarização). Valem para o app, para os processos auxiliares e para
+        o ffmpeg embutido.
+
+        As duas abaixo liberam o motor de JavaScript (V8) para gerar código de
+        máquina enquanto roda. Sem elas o app não abre, e o modo Node
+        (ELECTRON_RUN_AS_NODE), usado pelo Cobalt e pelo yt-dlp, também não.
+
+        O ffmpeg não precisa de nenhuma permissão extra: basta estar assinado.
+    -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+</dict>
+</plist>

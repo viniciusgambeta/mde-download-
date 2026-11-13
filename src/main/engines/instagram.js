@@ -3,6 +3,19 @@
 //
 // O login acontece numa janela do Instagram de verdade; o app nunca vê a
 // senha, só reaproveita a sessão (cookies) que fica guardada nesta máquina.
+//
+// Como os dados são obtidos (conferido em nov/2026 com uma sessão logada):
+//   - Posts: consulta "media/<id>/info" em www.instagram.com, feita de dentro
+//     de uma página do próprio Instagram (a "página-ponte").
+//   - Stories, destaques e foto de perfil: os endereços diretos que existiam
+//     pra isso foram desativados ou respondem vazio pra sessões do site
+//     (web_profile_info dá 404; feed/reels_media dá erro 500 no www e volta
+//     vazio no i.instagram.com). O site atual busca esses dados por consultas
+//     internas cujos identificadores mudam a cada versão. Em vez de copiar
+//     esses identificadores, abrimos a página de verdade numa janela invisível
+//     e lemos a resposta que o próprio site busca.
+//   - Ao abrir a página de stories, o site avisaria o dono de que você viu o
+//     story. Esse aviso é bloqueado antes de sair (ver "isSeenReceipt").
 
 const { BrowserWindow, session } = require('electron');
 const direct = require('./direct');
@@ -10,6 +23,11 @@ const direct = require('./direct');
 const PARTITION = 'persist:instagram';
 const APP_ID = '936619743392459';
 const ORIGIN = 'https://www.instagram.com';
+// Página leve do Instagram, usada só como ponto de partida das consultas de
+// posts (não carrega o feed).
+const BRIDGE_URL = `${ORIGIN}/robots.txt`;
+const BRIDGE_IDLE = 60000;
+const CAPTURE_TIMEOUT = 25000;
 
 let configured = false;
 
@@ -29,105 +47,279 @@ async function cookie(name) {
     return found[0] ? found[0].value : null;
 }
 
+// Logado = tem o cookie da sessão e o do usuário. Só o primeiro não basta:
+// ele pode existir no meio de um login que ainda não terminou.
 async function isConnected() {
-    return Boolean(await cookie('sessionid'));
-}
-
-let loginWindow = null;
-
-// Abre a tela de login do Instagram e resolve quando a sessão existir
-// (true) ou quando a janela for fechada sem login (false).
-function connect(parent) {
-    if (loginWindow) {
-        loginWindow.focus();
-        return new Promise((resolve) => loginWindow.once('closed', () => isConnected().then(resolve)));
-    }
-
-    return new Promise((resolve) => {
-        const s = ses();
-        const win = new BrowserWindow({
-            width: 460,
-            height: 740,
-            parent,
-            title: 'Conectar Instagram',
-            autoHideMenuBar: true,
-            backgroundColor: '#ffffff',
-            webPreferences: { partition: PARTITION, sandbox: true, contextIsolation: true, nodeIntegration: false },
-        });
-        loginWindow = win;
-
-        const onCookie = (_event, changed, _cause, removed) => {
-            if (changed.name === 'sessionid' && !removed && changed.value) {
-                // Dá um instante pro Instagram terminar de gravar os outros cookies.
-                setTimeout(() => { if (!win.isDestroyed()) win.close(); }, 1500);
-            }
-        };
-        s.cookies.on('changed', onCookie);
-
-        win.on('closed', () => {
-            s.cookies.removeListener('changed', onCookie);
-            loginWindow = null;
-            s.cookies.flushStore().catch(() => {}).then(() => isConnected()).then(resolve);
-        });
-
-        win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-        win.loadURL(`${ORIGIN}/accounts/login/`);
-    });
-}
-
-async function disconnect() {
-    await ses().clearStorageData();
+    return Boolean(await cookie('sessionid')) && Boolean(await cookie('ds_user_id'));
 }
 
 class IgError extends Error {
-    constructor(message, code) {
+    constructor(message, code, detail) {
         super(message);
         this.code = code;
+        if (detail) this.detail = detail;
     }
 }
 
-async function api(pathname) {
+const requireLogin = async () => {
     if (!(await isConnected())) throw new IgError('Conecte o Instagram pra baixar isso.', 'ig-login');
+};
+const expired = (detail) => new IgError('A sessão do Instagram expirou. Conecte de novo.', 'ig-login', detail);
+const rateLimited = (detail) => new IgError('O Instagram limitou as requisições. Tenta de novo em alguns minutos.', 'rate', detail);
 
-    let res;
+function hiddenWindow() {
+    ses();
+    const win = new BrowserWindow({
+        show: false,
+        width: 1100,
+        height: 900,
+        webPreferences: { partition: PARTITION, sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false },
+    });
+    win.webContents.setAudioMuted(true);
+    win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    return win;
+}
+
+/* ---------- posts: consulta feita de dentro de uma página do Instagram ---------- */
+
+// Roda dentro da página (por isso é montada como texto mais abaixo).
+async function requestFromPage(path, appId) {
+    const csrf = (document.cookie.match(/(?:^|; )csrftoken=([^;]+)/) || [])[1] || '';
+    const res = await fetch(path, {
+        credentials: 'include',
+        referrer: `${location.origin}/`,
+        headers: {
+            'x-ig-app-id': appId,
+            'x-asbd-id': '359341',
+            'x-ig-www-claim': sessionStorage.getItem('www-claim-v2') || '0',
+            'x-requested-with': 'XMLHttpRequest',
+            'x-csrftoken': csrf,
+        },
+    });
+    return { status: res.status, type: res.headers.get('content-type') || '', url: res.url, text: await res.text() };
+}
+
+let bridgeWindow = null;
+let bridgeOpening = null;
+let bridgeTimer = null;
+
+function closeBridge() {
+    clearTimeout(bridgeTimer);
+    if (bridgeWindow && !bridgeWindow.isDestroyed()) bridgeWindow.destroy();
+    bridgeWindow = null;
+}
+
+// Janela invisível numa página do Instagram. Fica aberta por um minuto depois
+// do último uso, pra consultas seguidas não pagarem o custo de abrir de novo.
+function bridge() {
+    clearTimeout(bridgeTimer);
+    bridgeTimer = setTimeout(closeBridge, BRIDGE_IDLE);
+    if (bridgeWindow && !bridgeWindow.isDestroyed()) return Promise.resolve(bridgeWindow);
+    if (bridgeOpening) return bridgeOpening;
+
+    bridgeOpening = (async () => {
+        const win = hiddenWindow();
+        win.on('closed', () => { if (bridgeWindow === win) bridgeWindow = null; });
+        try {
+            await win.loadURL(BRIDGE_URL);
+        } catch (err) {
+            win.destroy();
+            throw err;
+        }
+        bridgeWindow = win;
+        return win;
+    })().finally(() => { bridgeOpening = null; });
+
+    return bridgeOpening;
+}
+
+// Resumo curto da resposta pro registro de falhas (sem cookies nem dados pessoais).
+function describe(reply) {
+    const head = reply.text.slice(0, 400).replace(/\s+/g, ' ');
+    const html = head.match(/<html[^>]*>/i);
+    return `HTTP ${reply.status} ${reply.type.split(';')[0]} ${html ? html[0] : head.slice(0, 160)}`;
+}
+
+// Consulta em www.instagram.com/api/v1. Atenção: a página de "404" do
+// Instagram vem sempre marcada como "not-logged-in", mesmo com a conta logada,
+// então ela NÃO serve de sinal de sessão expirada.
+async function api(pathname) {
+    await requireLogin();
+
+    let reply;
     try {
-        res = await ses().fetch(`${ORIGIN}/api/v1/${pathname}`, {
-            credentials: 'include',
-            redirect: 'manual',
-            headers: {
-                accept: '*/*',
-                'x-ig-app-id': APP_ID,
-                'x-asbd-id': '359341',
-                'x-ig-www-claim': '0',
-                'x-requested-with': 'XMLHttpRequest',
-                'x-csrftoken': (await cookie('csrftoken')) || '',
-                referer: `${ORIGIN}/`,
-            },
-        });
-    } catch {
-        throw new IgError('Falha de conexão com o Instagram.', 'network');
+        const win = await bridge();
+        reply = await win.webContents.executeJavaScript(
+            `(${requestFromPage.toString()})(${JSON.stringify(`/api/v1/${pathname}`)}, ${JSON.stringify(APP_ID)})`, true);
+    } catch (err) {
+        throw new IgError('Falha de conexão com o Instagram.', 'network', String(err && err.message).slice(0, 200));
     }
 
-    if (res.status === 429) throw new IgError('O Instagram limitou as requisições. Tenta de novo em alguns minutos.', 'rate');
-    if (res.status === 404) throw new IgError('Não encontrado no Instagram.', 'not-found');
+    const detail = `${pathname.split('?')[0]} -> ${describe(reply)}`;
+    if (reply.status === 429) throw rateLimited(detail);
 
     let data = null;
-    try { data = await res.json(); } catch { /* resposta não era JSON */ }
+    if (reply.type.includes('json')) {
+        try { data = JSON.parse(reply.text); } catch { /* resposta truncada ou inválida */ }
+    }
 
-    const loginNeeded = res.status === 401 || res.status === 403 || (res.status >= 300 && res.status < 400)
-        || (data && (data.require_login || data.message === 'login_required' || data.message === 'checkpoint_required'));
-    if (loginNeeded) throw new IgError('A sessão do Instagram expirou. Conecte de novo.', 'ig-login');
-    if (!res.ok || !data) throw new IgError(`O Instagram respondeu com erro (${res.status}).`, 'http');
-
+    const askedLogin = data && (data.require_login || data.message === 'login_required' || data.message === 'checkpoint_required');
+    if (reply.status === 401 || askedLogin || /\/accounts\/login/.test(reply.url || '')) throw expired(detail);
+    if (reply.status === 404) throw new IgError('Não encontrado no Instagram.', 'not-found', detail);
+    if (reply.status < 200 || reply.status >= 300 || !data) {
+        throw new IgError(`O Instagram respondeu com erro (${reply.status}).`, 'http', detail);
+    }
     return data;
 }
 
-async function profile(username) {
-    const data = await api(`users/web_profile_info/?username=${encodeURIComponent(username)}`);
-    const user = data && data.data && data.data.user;
-    if (!user) throw new IgError(`Perfil @${username} não encontrado.`, 'not-found');
-    return user;
+/* ---------- stories, destaques e perfil: lendo o que a página busca ---------- */
+
+// O site avisa o dono do story de que alguém viu por um pedido cujo nome
+// contém "Seen" (ex.: PolarisStoriesV3SeenMutation) ou pelos endereços antigos
+// ".../seen". Qualquer pedido assim é barrado antes de sair.
+function isSeenReceipt(request) {
+    const friendly = request.headers['X-FB-Friendly-Name'] || request.headers['x-fb-friendly-name'] || '';
+    return /seen/i.test(friendly)
+        || /fb_api_req_friendly_name=[^&]*seen/i.test(request.postData || '')
+        || /\/seen\b|[/_]seen[/?]/i.test(request.url);
 }
+
+function parseLoose(text) {
+    const start = text.indexOf('{');
+    if (start < 0) return null;
+    try { return JSON.parse(text.slice(start)); } catch { return null; }
+}
+
+// Procura, em qualquer profundidade do JSON, objetos que passem no teste.
+// Os dados embutidos na página ficam bem fundo (mais de 15 níveis), daí o limite alto.
+function findAll(node, test, out = [], depth = 0) {
+    if (!node || typeof node !== 'object' || depth > 60) return out;
+    if (!Array.isArray(node) && test(node)) out.push(node);
+    for (const value of Array.isArray(node) ? node : Object.values(node)) findAll(value, test, out, depth + 1);
+    return out;
+}
+
+// Uma captura por vez: abrir duas janelas dessas ao mesmo tempo, ou uma logo
+// depois de fechar a outra, faz a segunda falhar ao carregar.
+let captureQueue = Promise.resolve();
+function capture(pagePath, hint, pick) {
+    const run = captureQueue.then(() => captureNow(pagePath, hint, pick));
+    captureQueue = run.catch(() => {}).then(() => new Promise((resolve) => setTimeout(resolve, 300)));
+    return run;
+}
+
+// Abre uma página do Instagram numa janela invisível e acompanha o que chega:
+// o documento da página (que já traz dados embutidos) e as respostas das
+// consultas internas do site. Cada bloco de dados que combinar com `hint` é
+// interpretado e passado a `pick(json)`, que devolve o dado quando achar (ou
+// nada, pra continuar esperando). Resolve com o dado, ou null se a página
+// terminou de carregar sem trazê-lo.
+async function captureNow(pagePath, hint, pick) {
+    await requireLogin();
+    const win = hiddenWindow();
+    const dbg = win.webContents.debugger;
+
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        const wanted = new Set();
+        let idleTimer = null;
+
+        const finish = (settle, value) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(deadline);
+            clearTimeout(idleTimer);
+            // Desliga a interceptação antes de fechar a janela, senão a próxima
+            // janela pode falhar ao carregar.
+            Promise.resolve()
+                .then(() => (dbg.isAttached() ? dbg.sendCommand('Fetch.disable') : null))
+                .catch(() => {})
+                .then(() => {
+                    try { if (dbg.isAttached()) dbg.detach(); } catch { /* já solto */ }
+                    if (!win.isDestroyed()) win.destroy();
+                    settle(value);
+                });
+        };
+        const deadline = setTimeout(() => finish(resolve, null), CAPTURE_TIMEOUT);
+        // Depois que a página carrega, se passar um tempo sem nada novo, desistimos.
+        const armIdle = () => {
+            clearTimeout(idleTimer);
+            idleTimer = setTimeout(() => finish(resolve, null), 6000);
+        };
+
+        const documents = new Set();
+        const inspect = async (requestId, isDocument) => {
+            const { body, base64Encoded } = await dbg.sendCommand('Network.getResponseBody', { requestId });
+            const text = base64Encoded ? Buffer.from(body, 'base64').toString('utf8') : body;
+            // No documento, os dados vêm em blocos <script type="application/json">.
+            const chunks = isDocument
+                ? [...text.matchAll(/<script type="application\/json"[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1])
+                : [text];
+            for (const chunk of chunks) {
+                if (settled) return;
+                if (!hint.test(chunk)) continue;
+                const json = parseLoose(chunk);
+                const value = json && pick(json);
+                if (value) return finish(resolve, value);
+            }
+        };
+
+        dbg.on('message', (_event, method, params) => {
+            if (settled) return;
+            if (method === 'Fetch.requestPaused') {
+                const blocked = isSeenReceipt(params.request);
+                // Só em desenvolvimento: mostra o nome de cada consulta interna e se foi barrada.
+                if (process.env.MDD_IG_DEBUG) {
+                    const name = params.request.headers['X-FB-Friendly-Name'] || params.request.headers['x-fb-friendly-name']
+                        || ((params.request.postData || '').match(/fb_api_req_friendly_name=([^&]+)/) || [])[1] || new URL(params.request.url).pathname;
+                    console.log(`[instagram] ${blocked ? 'BARRADO ' : 'liberado'} ${name}`);
+                }
+                const command = blocked
+                    ? ['Fetch.failRequest', { requestId: params.requestId, errorReason: 'BlockedByClient' }]
+                    : ['Fetch.continueRequest', { requestId: params.requestId }];
+                dbg.sendCommand(...command).catch(() => {});
+            } else if (method === 'Network.responseReceived') {
+                const { url, status } = params.response;
+                if (params.type === 'Document') {
+                    // Outros documentos (ex.: sincronização com o Facebook) não interessam.
+                    if (!url.startsWith(ORIGIN) || url === BRIDGE_URL) return;
+                    if (/\/accounts\/login/.test(url)) finish(reject, expired(`${pagePath} -> redirecionou pro login`));
+                    else if (status === 404) finish(reject, new IgError('Não encontrado no Instagram.', 'not-found', `${pagePath} -> HTTP 404`));
+                    else if (status === 429) finish(reject, rateLimited(`${pagePath} -> HTTP 429`));
+                    else { wanted.add(params.requestId); documents.add(params.requestId); }
+                } else if (/graphql/.test(url)) {
+                    wanted.add(params.requestId);
+                }
+            } else if (method === 'Network.loadingFinished' && wanted.delete(params.requestId)) {
+                if (idleTimer) armIdle();
+                inspect(params.requestId, documents.has(params.requestId)).catch(() => {});
+            }
+        });
+
+        win.webContents.once('did-stop-loading', armIdle);
+
+        (async () => {
+            // Primeiro uma página leve do Instagram: o acompanhamento da rede só
+            // se mantém se for ligado com a janela já dentro do site.
+            await win.loadURL(BRIDGE_URL).catch(() => new Promise((r) => setTimeout(r, 600)).then(() => win.loadURL(BRIDGE_URL)));
+            dbg.attach('1.3');
+            await dbg.sendCommand('Network.enable');
+            // Pausa só os pedidos que podem ser o aviso de "visto", pra decidir um a um.
+            await dbg.sendCommand('Fetch.enable', {
+                patterns: [{ urlPattern: '*graphql*', requestStage: 'Request' }, { urlPattern: '*seen*', requestStage: 'Request' }],
+            });
+            await win.loadURL(`${ORIGIN}${pagePath}`);
+        })().catch((err) => {
+            // loadURL "falha" quando a página redireciona; a navegação segue normal.
+            if (!/ERR_ABORTED|-3\b/.test(String(err && err.message))) {
+                finish(reject, new IgError('Falha de conexão com o Instagram.', 'network', String(err && err.message).slice(0, 200)));
+            }
+        });
+    });
+}
+
+const hasMedia = (item) => Boolean(item && (item.image_versions2 || item.video_versions));
+const isReel = (node) => Array.isArray(node.items) && node.items.some(hasMedia);
 
 // Escolhe a melhor versão (maior resolução) de um item de mídia.
 function bestMedia(item) {
@@ -159,71 +351,137 @@ async function downloadAll(medias, dir, ctx) {
     return files;
 }
 
-async function avatar({ username, dir }, ctx) {
-    const user = await profile(username);
-    ctx.meta({ title: `@${user.username}` });
+/* ---------- login ---------- */
 
-    let url = user.profile_pic_url_hd || user.profile_pic_url;
-    // Esse segundo endpoint devolve a foto em resolução cheia; se falhar,
-    // ficamos com a versão menor que já temos.
-    try {
-        const info = await api(`users/${user.id}/info/`);
-        const hd = info.user && info.user.hd_profile_pic_url_info && info.user.hd_profile_pic_url_info.url;
-        if (hd) url = hd;
-    } catch (err) {
-        if (err.code === 'ig-login') throw err;
+let loginWindow = null;
+
+// Abre a tela de login do Instagram e resolve quando a pessoa estiver logada
+// (true) ou quando a janela for fechada antes (false).
+function connect(parent) {
+    if (loginWindow) {
+        loginWindow.focus();
+        return new Promise((resolve) => loginWindow.once('closed', () => isConnected().then(resolve)));
     }
+
+    return new Promise((resolve) => {
+        const s = ses();
+        const win = new BrowserWindow({
+            width: 460,
+            height: 740,
+            parent,
+            title: 'Conectar Instagram',
+            autoHideMenuBar: true,
+            backgroundColor: '#ffffff',
+            webPreferences: { partition: PARTITION, sandbox: true, contextIsolation: true, nodeIntegration: false },
+        });
+        loginWindow = win;
+
+        // De tempos em tempos confere se o login terminou: os dois cookies da
+        // sessão existem e a janela já saiu das telas de login, de código de
+        // verificação e de confirmação de segurança. A janela só fecha depois
+        // de duas conferências seguidas positivas, pra não cortar o Instagram
+        // no meio de um redirecionamento.
+        let checking = false;
+        let positives = 0;
+        const check = async () => {
+            if (checking || win.isDestroyed()) return;
+            checking = true;
+            try {
+                const path = new URL(win.webContents.getURL()).pathname;
+                const stillLoggingIn = /^\/(accounts\/login|accounts\/two_factor|two_factor|challenge|auth_platform)/.test(path);
+                positives = (await isConnected()) && !stillLoggingIn ? positives + 1 : 0;
+                if (positives >= 2 && !win.isDestroyed()) win.close();
+            } catch { /* página trocando; tenta de novo na próxima volta */ } finally {
+                checking = false;
+            }
+        };
+        const timer = setInterval(check, 1200);
+
+        win.on('closed', () => {
+            clearInterval(timer);
+            loginWindow = null;
+            s.cookies.flushStore().catch(() => {}).then(() => isConnected()).then(resolve);
+        });
+
+        win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+        win.loadURL(`${ORIGIN}/accounts/login/`);
+    });
+}
+
+async function disconnect() {
+    closeBridge();
+    await ses().clearStorageData();
+}
+
+/* ---------- o que dá pra baixar ---------- */
+
+async function avatar({ username, dir }, ctx) {
+    ctx.meta({ title: `@${username}` });
+    const wanted = username.toLowerCase();
+    const isOwner = (node) => typeof node.username === 'string' && node.username.toLowerCase() === wanted
+        && Boolean(node.hd_profile_pic_url_info || node.profile_pic_url_hd || node.profile_pic_url);
+
+    // A página do perfil traz os dados do dono em mais de uma resposta. A foto
+    // em alta (hd_profile_pic_url_info) vem numa das últimas, então guardamos a
+    // versão menor como reserva e seguimos esperando a melhor.
+    let fallback = null;
+    const best = await capture(`/${encodeURIComponent(username)}/`, /profile_pic/, (json) => {
+        const nodes = findAll(json, isOwner);
+        const hd = nodes.find((node) => node.hd_profile_pic_url_info && node.hd_profile_pic_url_info.url);
+        if (hd) return hd;
+        fallback = nodes.find((node) => node.profile_pic_url_hd) || fallback || nodes[0] || null;
+        return null;
+    });
+    const user = best || fallback;
+    if (!user) throw new IgError('Não consegui ler esse perfil no Instagram.', 'http', 'página do perfil não trouxe os dados do usuário');
+
+    const url = (user.hd_profile_pic_url_info && user.hd_profile_pic_url_info.url) || user.profile_pic_url_hd || user.profile_pic_url;
     if (!url) throw new IgError('Esse perfil não tem foto.', 'empty');
 
     const files = await downloadAll([{ url, name: `${user.username}_perfil` }], dir, ctx);
     return { files, title: `@${user.username}` };
 }
 
-async function reel(reelId) {
-    const data = await api(`feed/reels_media/?reel_ids=${encodeURIComponent(reelId)}`);
-    const fromMap = data.reels && (data.reels[reelId] || Object.values(data.reels)[0]);
-    const fromList = data.reels_media && data.reels_media[0];
-    return fromMap || fromList || null;
+// Abre a página de stories (ou de um destaque) e devolve o conjunto de itens
+// que veio nela. A página pode trazer conjuntos de outras pessoas (a fila de
+// stories), então `matches` diz qual é o que queremos.
+function reelFrom(pagePath, matches) {
+    return capture(pagePath, /"(?:image_versions2|video_versions)"/, (json) => findAll(json, isReel).find(matches) || null);
 }
 
 // storyId opcional: baixa só aquele story em vez de todos.
 async function stories({ username, storyId, dir }, ctx) {
-    const user = await profile(username);
-    ctx.meta({ title: `@${user.username}` });
+    ctx.meta({ title: `@${username}` });
 
-    const found = await reel(String(user.id));
-    let items = (found && found.items) || [];
+    const wanted = username.toLowerCase();
+    const found = await reelFrom(`/stories/${encodeURIComponent(username)}/`,
+        (r) => Boolean(r.user && typeof r.user.username === 'string' && r.user.username.toLowerCase() === wanted));
+    let items = ((found && found.items) || []).filter(hasMedia);
+    const owner = (found && found.user && found.user.username) || username;
     if (storyId) {
         items = items.filter((it) => String(it.pk) === String(storyId) || String(it.id).startsWith(`${storyId}_`));
         if (!items.length) throw new IgError('Esse story não está mais disponível.', 'empty');
     }
     if (!items.length) {
-        const why = user.is_private && !user.followed_by_viewer
-            ? 'Perfil privado: só dá pra ver os stories seguindo a conta.'
-            : `@${user.username} não tem stories agora.`;
-        throw new IgError(why, 'empty');
+        // Pode ser falta de stories ou perfil privado que a conta não segue.
+        throw new IgError(`@${username} não tem stories visíveis agora.`, 'empty');
     }
 
-    const medias = items
-        .map((it) => ({ media: bestMedia(it), pk: it.pk }))
-        .filter((m) => m.media)
-        .map((m) => ({ url: m.media.url, name: `${user.username}_story_${m.pk}` }));
+    const medias = items.map((it) => ({ url: bestMedia(it).url, name: `${owner}_story_${it.pk || it.id}` }));
     const files = await downloadAll(medias, dir, ctx);
-    return { files, title: `@${user.username}` };
+    return { files, title: `@${owner}` };
 }
 
 async function highlight({ id, dir }, ctx) {
-    const found = await reel(`highlight:${id}`);
-    const items = (found && found.items) || [];
+    const found = await reelFrom(`/stories/highlights/${encodeURIComponent(id)}/`,
+        (r) => String(r.id || '').includes(String(id)) || String(r.reel_type || '').includes('highlight'));
+    const items = ((found && found.items) || []).filter(hasMedia);
     if (!items.length) throw new IgError('Destaque vazio ou indisponível.', 'empty');
 
     const owner = (found.user && found.user.username) || 'instagram';
     ctx.meta({ title: found.title ? `${found.title} · @${owner}` : `@${owner}` });
 
-    const medias = items
-        .map((it) => ({ media: bestMedia(it), pk: it.pk }))
-        .filter((m) => m.media)
-        .map((m) => ({ url: m.media.url, name: `${owner}_destaque_${m.pk}` }));
+    const medias = items.map((it) => ({ url: bestMedia(it).url, name: `${owner}_destaque_${it.pk || it.id}` }));
     const files = await downloadAll(medias, dir, ctx);
     return { files, title: `@${owner}` };
 }

@@ -6,6 +6,10 @@ const APP_NAME = 'Me dá um Download';
 const APP_ID = 'local.medaumdownload.app';
 
 app.setName(APP_NAME);
+// O Electron põe o nome do app na identificação enviada aos sites (cabeçalho
+// User-Agent). O acento de "dá" faz alguns servidores recusarem o pedido (o de
+// mídia do Instagram responde HTTP 400), então tiramos esse trecho.
+app.userAgentFallback = app.userAgentFallback.replace(/ \S+\/\S+(?= Chrome\/)/, '');
 // A pasta de dados usa um nome sem acentos de propósito: alguns programas
 // externos (como o Whisper) tropeçam em caminhos acentuados no Windows.
 // Em desenvolvimento, MDD_USERDATA permite testar com dados isolados.

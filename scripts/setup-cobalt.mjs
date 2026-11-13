@@ -5,7 +5,7 @@
 //      npm run setup -- <ref>   (pega um commit/tag específico)
 
 import { execFileSync, execSync } from 'node:child_process';
-import { cpSync, rmSync, mkdirSync, writeFileSync, readFileSync, mkdtempSync } from 'node:fs';
+import { cpSync, rmSync, mkdirSync, writeFileSync, readFileSync, mkdtempSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -94,6 +94,14 @@ writeFileSync(join(dest, 'run.mjs'), [
 
 console.log('> instalando dependências do cobalt...');
 execSync('npm install --omit=dev --install-links --no-audit --no-fund', { cwd: dest, stdio: 'inherit' });
+
+// Quem baixa o ffmpeg é o script de instalação do ffmpeg-static. O npm 12 não
+// roda mais esses scripts sem autorização, então rodamos à mão se faltar.
+const ffmpegDir = join(dest, 'node_modules', 'ffmpeg-static');
+if (!existsSync(join(ffmpegDir, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'))) {
+    console.log('> baixando o ffmpeg...');
+    execFileSync(process.execPath, ['install.js'], { cwd: ffmpegDir, stdio: 'inherit' });
+}
 
 rmSync(tmp, { recursive: true, force: true });
 console.log(`> pronto: cobalt ${pkg.version} (${commit.slice(0, 7)}) em vendor/cobalt`);

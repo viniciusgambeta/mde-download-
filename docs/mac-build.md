@@ -30,6 +30,11 @@ e crie um secret (botão **New repository secret**) para cada linha:
 Os nomes precisam ser exatamente esses. O workflow usa o `APPLE_TEAM_ID` para
 conferir se o app saiu assinado pela equipe certa.
 
+Antes de gerar o app, o workflow confere o certificado e a chave e tolera
+colagens imperfeitas: espaços sobrando, a chave sem as linhas `BEGIN` e `END`
+ou com texto a mais em volta. O que ele encontrou aparece na página da
+execução, em **Annotations**, sem mostrar nenhum valor.
+
 ## 2. Gerar o instalador
 
 O workflow roda sozinho em três situações:
@@ -39,9 +44,12 @@ O workflow roda sozinho em três situações:
 - pelo botão **Run workflow**, na aba Actions (o botão só aparece depois que
   o arquivo do workflow estiver na branch `main`).
 
+Um push que só altera arquivos `.md` não dispara o workflow.
+
 Acompanhe em <https://github.com/viniciusgambeta/mde-download-/actions>. Leva
-de 15 a 30 minutos. No fim da página da execução, em **Artifacts**, fica o
-arquivo `MeDaUmDownload-mac`, um zip com os dois instaladores:
+de 10 a 15 minutos. No fim da página da execução, em **Artifacts**, fica o
+arquivo `MeDaUmDownload-mac`, um zip com os dois instaladores (para baixar é
+preciso estar logado no GitHub):
 
 | Arquivo | Para qual Mac |
 |---|---|
@@ -77,14 +85,26 @@ mesmo ícone reduzido para 18 e 36 pixels, sem a margem transparente. Se o
 
 ## 4. Se a execução falhar
 
-| Mensagem no log | O que fazer |
+O motivo aparece no topo da página da execução, em **Annotations**: o
+workflow publica ali o fim do registro do passo que falhou, então não é
+preciso abrir o log.
+
+| Mensagem | O que fazer |
 |---|---|
 | `Faltam secrets` | Criar os secrets citados na mensagem (seção 1) |
-| `MAC verification failed` ou `wrong password` | `CSC_KEY_PASSWORD` não é a senha do `.p12` |
-| `not a valid Developer ID` ou `0 identities found` | O `CSC_LINK` não contém um certificado "Developer ID Application" com a chave privada |
+| `Certificado e senha não combinam` | Colar de novo `CSC_KEY_PASSWORD` (e, se continuar, `CSC_LINK`), só com a linha do valor |
+| `Certificado recusado pelo macOS` | O `.p12` abre com a senha, mas não tem um certificado "Developer ID Application" com a chave privada, ou o macOS não aceitou o formato |
+| `Chave de notarização inválida` | Colar de novo `APPLE_API_KEY_P8`, com o conteúdo do arquivo `.p8` |
 | `Equipe diferente` | `APPLE_TEAM_ID` não é a equipe do certificado |
 | `A required agreement is missing or has expired` | Entrar em <https://developer.apple.com/account> e aceitar os contratos pendentes |
-| `Invalid credentials` ou erro 401 na notarização | Conferir `APPLE_API_KEY_P8`, `APPLE_API_KEY_ID` e `APPLE_API_ISSUER` |
+| `Invalid credentials` ou erro 401 na notarização | Conferir `APPLE_API_KEY_ID` e `APPLE_API_ISSUER`, e se a chave de API não foi revogada |
+
+Um aviso que não impede o build: **Certificado gravado com a senha errada**.
+O `.p12` atual foi criado com um caractere invisível no fim da senha (o
+arquivo de onde ela foi lida terminava com uma quebra de linha). O workflow
+contorna isso regravando o certificado a cada execução. Para o aviso sumir,
+gere o `.p12` de novo, como descrito no fim deste guia, e atualize o secret
+`CSC_LINK`.
 
 ## Gerar num Mac, sem o GitHub
 
@@ -135,7 +155,9 @@ openssl pkcs12 -export -inkey developer-id.key -in developer-id.pem -out develop
 ```
 
 As três últimas opções fazem o `.p12` sair num formato que o macOS aceita
-importar. A senha pedida nesse comando é o `CSC_KEY_PASSWORD`. Para copiar o
+importar. A senha pedida nesse comando é o `CSC_KEY_PASSWORD`: digite-a
+quando o comando pedir. Não troque por `-passout file:arquivo`, porque uma
+quebra de linha no fim do arquivo acaba fazendo parte da senha. Para copiar o
 `CSC_LINK`:
 
 ```bash

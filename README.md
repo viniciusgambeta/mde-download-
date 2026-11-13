@@ -140,6 +140,12 @@ Para gerar o instalador em `dist/`:
 npm run dist
 ```
 
+### macOS (em teste)
+
+Há uma versão para macOS em preparação. O instalador é gerado pelo GitHub
+Actions, assinado e notarizado: veja [docs/mac-build.md](docs/mac-build.md).
+O roteiro de teste está em [docs/mac-teste.md](docs/mac-teste.md).
+
 ## Uso responsável
 
 Baixe apenas conteúdo que você tem direito de baixar. Respeite os direitos

@@ -49,9 +49,10 @@ Um push que só altera arquivos `.md` não dispara o workflow.
 Quando a execução vem de uma tag, os dois instaladores também são anexados à
 release dessa tag no GitHub (criada na hora, se ainda não existir). É dessa
 release que o site baixa os instaladores de Mac: ele usa, para cada sistema,
-a release mais nova que tiver o arquivo. A primeira foi a `v1.0.1-mac`. Uma
-tag terminada em `-mac` cria uma release só de Mac, que não toma o lugar da
-marcada como a mais recente.
+a release mais nova que tiver o arquivo. Uma tag com `-mac` no nome (como
+`v1.0.1-mac.2`) cria uma release só de Mac, que não toma o lugar da marcada
+como a mais recente. A primeira, `v1.0.1-mac`, tinha o app que fechava ao
+abrir (seção 4); a correção saiu na `v1.0.1-mac.2`.
 
 Antes de entregar os instaladores, o workflow instala cada `.dmg`, abre o app
 de verdade e confere que ele cria a janela e continua aberto. Se o app fechar
@@ -122,8 +123,9 @@ O workflow **Teste de abertura no macOS**
 ([.github/workflows/teste-mac.yml](../.github/workflows/teste-mac.yml)) baixa
 os instaladores de uma release, instala e abre o app no macOS 15 e no 26, com
 chip Apple e com Intel. Ele roda quando o arquivo do workflow muda na branch
-`mac` e pelo botão **Run workflow** (informando a tag). Se o app fechar, o
-relatório do crash aparece em **Annotations**.
+`mac` e pelo botão **Run workflow**. Sem uma tag informada, testa a release
+mais nova que tiver instalador de Mac, a mesma que o site oferece. Se o app
+fechar, o relatório do crash aparece em **Annotations**.
 
 ## 6. Se a execução falhar
 

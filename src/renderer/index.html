@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: https://i.ytimg.com; style-src 'self'; script-src 'self'">
+    <title>Me dá um Download</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header class="bar">
+        <div class="brand">
+            <img src="assets/icon.png" alt="" draggable="false">
+            <span>Me dá um Download</span>
+        </div>
+        <div class="bar-actions">
+            <button id="open-folder" class="icon-btn" title="Abrir pasta de downloads" aria-label="Abrir pasta de downloads"></button>
+            <button id="open-settings" class="icon-btn" title="Ajustes" aria-label="Ajustes"></button>
+        </div>
+    </header>
+
+    <main id="app" class="is-empty">
+        <section class="hero">
+            <div class="greeting">
+                <img class="mascot" src="assets/mascote.svg" alt="" draggable="false">
+                <p class="greeting-text">O que vamos baixar hoje?</p>
+            </div>
+            <div id="palette" class="palette">
+                <label class="field">
+                    <span class="field-icon" id="field-icon"></span>
+                    <input id="url" type="text" placeholder="Cole um link" spellcheck="false" autocomplete="off" autofocus>
+                    <button id="clear" class="icon-btn" title="Limpar" aria-label="Limpar" hidden></button>
+                </label>
+                <div id="result" class="result" hidden></div>
+            </div>
+            <div id="whisper-card" class="notice" hidden>
+                <div class="notice-body">
+                    <div class="notice-title"></div>
+                    <div class="notice-text"></div>
+                    <div class="notice-progress" hidden><i></i></div>
+                </div>
+                <div class="notice-actions"></div>
+            </div>
+            <div id="sites" class="sites" aria-hidden="true"></div>
+        </section>
+
+        <section class="downloads">
+            <div class="downloads-head">
+                <span>Downloads</span>
+                <button id="clear-list" class="text-btn">Limpar</button>
+            </div>
+            <ul id="list" class="list"></ul>
+        </section>
+    </main>
+
+    <div id="settings" class="sheet" hidden>
+        <div class="sheet-row">
+            <span class="sheet-label">Pasta</span>
+            <button id="pick-folder" class="path-btn" title="Trocar pasta"></button>
+        </div>
+        <div class="sheet-row">
+            <span class="sheet-label">Qualidade</span>
+            <div id="quality" class="segmented" role="radiogroup" aria-label="Qualidade do vídeo"></div>
+        </div>
+        <div class="sheet-row">
+            <span class="sheet-label">Abrir pasta ao terminar</span>
+            <button id="open-folder-toggle" class="switch" role="switch" aria-label="Abrir pasta ao terminar"></button>
+        </div>
+        <div class="sheet-row">
+            <span class="sheet-label">Whisper</span>
+            <button id="whisper-toggle" class="chip-btn"></button>
+        </div>
+        <div class="sheet-row">
+            <span class="sheet-label">Instagram</span>
+            <button id="ig-toggle" class="chip-btn"></button>
+        </div>
+    </div>
+
+    <script src="icons.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

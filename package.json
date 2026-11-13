@@ -1,0 +1,50 @@
+{
+  "name": "me-da-um-download",
+  "productName": "Me dá um Download",
+  "version": "1.0.0",
+  "description": "Cola o link, baixa. Vídeos, fotos, áudio e transcrições de qualquer rede.",
+  "author": "viniciusgambeta",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/viniciusgambeta/mde-download-.git"
+  },
+  "homepage": "https://github.com/viniciusgambeta/mde-download-",
+  "private": true,
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "setup": "node scripts/setup-cobalt.mjs",
+    "dist": "electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "electron": "^45.3.1",
+    "electron-builder": "^26.18.0"
+  },
+  "build": {
+    "appId": "local.medaumdownload.app",
+    "productName": "Me dá um Download",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "afterPack": "scripts/after-pack.cjs",
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico",
+      "executableName": "MeDaUmDownload",
+      "signAndEditExecutable": true
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Me dá um Download",
+      "artifactName": "MeDaUmDownload-Setup-${version}.${ext}"
+    }
+  }
+}

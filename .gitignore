@@ -1,0 +1,10 @@
+# Dependências e resultados de build
+node_modules/
+dist/
+
+# Cópia do Cobalt gerada por "npm run setup"
+vendor/cobalt/
+
+# Arquivos locais
+*.log
+__pycache__/

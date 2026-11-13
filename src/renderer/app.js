@@ -52,7 +52,7 @@ function iconButton(icon, title, onClick) {
 const badgeFor = (platform) => BADGES[platform] || BADGES.generic;
 const badgeClass = (platform) => (BADGES[platform] ? platform : 'generic');
 // Na lista os ícones são em uma cor só; o do YouTube precisa do contorno.
-const listIconFor = (platform) => (platform === 'youtube' ? BADGES.youtubeLine : badgeFor(platform));
+const listIconFor = badgeFor;
 
 /* ---------- campo de link e sugestão de ações ---------- */
 
@@ -505,7 +505,7 @@ $('#open-folder').innerHTML = ICONS.folder;
 els.openSettings.innerHTML = ICONS.sliders;
 els.clear.innerHTML = ICONS.close;
 $('#field-icon').innerHTML = ICONS.link;
-els.sites.innerHTML = ['youtubeLine', 'instagram', 'tiktok', 'x', 'generic'].map((key) => BADGES[key]).join('');
+els.sites.innerHTML = ['youtube', 'instagram', 'tiktok', 'x', 'generic'].map((key) => BADGES[key]).join('');
 
 els.url.addEventListener('input', onInput);
 els.clear.addEventListener('click', reset);

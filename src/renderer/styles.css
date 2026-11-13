@@ -62,6 +62,8 @@ svg {
     stroke-linecap: round;
     stroke-linejoin: round;
 }
+/* Símbolos das marcas são preenchidos, não traçados. */
+svg.logo { fill: currentColor; stroke: none; }
 
 button { font: inherit; color: inherit; }
 button:focus-visible, select:focus-visible { outline: 2px solid var(--line-strong); outline-offset: 2px; }
@@ -254,9 +256,17 @@ main.is-empty .greeting-text { font-size: 22px; }
     background: var(--surface-2);
 }
 .badge svg { width: 20px; height: 20px; }
+.badge svg.logo { width: 19px; height: 19px; }
 .badge.youtube { background: #ff0033; }
 .badge.instagram { background: linear-gradient(45deg, #f9ce34, #ee2a7b 55%, #6228d7); }
 .badge.tiktok, .badge.x { background: #000; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .14); }
+.badge.facebook { background: #0866ff; }
+.badge.reddit { background: #ff4500; }
+.badge.pinterest { background: #bd081c; }
+.badge.vimeo { background: #1ab7ea; }
+.badge.twitch { background: #9146ff; }
+.badge.soundcloud { background: #ff5500; }
+.badge.bluesky { background: #1185fe; }
 .badge.generic { color: var(--muted); }
 
 .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
@@ -327,11 +337,13 @@ main.is-empty .greeting-text { font-size: 22px; }
 .sites {
     display: flex;
     justify-content: center;
+    align-items: center;
     gap: 16px;
     margin-top: 20px;
     color: var(--faint);
     transition: opacity .2s;
 }
+.sites svg.logo { width: 16px; height: 16px; }
 main:not(.is-empty) .sites, .sites.is-hidden { opacity: 0; height: 0; margin: 0; overflow: hidden; }
 
 /* ---------- lista de downloads ---------- */

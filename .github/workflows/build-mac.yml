@@ -134,24 +134,39 @@ jobs:
             console.log("Senha: " + bruta.length + " caracteres recebidos, " + bruta.trim().length + " sem os espaços das pontas; espaços ou quebras de linha: " + espacos + "; caracteres fora do teclado comum: " + estranhos + "; palavras: " + bruta.trim().split(/\s+/).length);
           ' | tee -a "$relatorio"
 
+          # O contrário também acontece: o certificado ter sido gravado com uma
+          # quebra de linha invisível no fim da senha (o arquivo de onde ela
+          # foi lida terminava assim). Por isso cada leitura é testada também
+          # com esse final. SENHA_ABRE é a que abre o arquivo como ele veio.
           variante=""
+          sobra=""
           for tentativa in como-veio sem-espacos-nas-pontas primeira-palavra so-letras-numeros-e-simbolos; do
-            SENHA_P12="$(senha_como "$tentativa")"
-            export SENHA_P12
-            echo "::add-mask::$SENHA_P12"
-            if openssl pkcs12 -in "$dir/original.p12" -passin env:SENHA_P12 -noout > "$dir/abrir.txt" 2>&1; then
-              variante="$tentativa"
-              break
-            fi
+            for fim in "" $'\r' $'\n' $'\r\n'; do
+              SENHA_ABRE="$(senha_como "$tentativa")$fim"
+              export SENHA_ABRE
+              if openssl pkcs12 -in "$dir/original.p12" -passin env:SENHA_ABRE -noout > "$dir/abrir.txt" 2>&1; then
+                variante="$tentativa"
+                sobra="$fim"
+                break 2
+              fi
+            done
           done
           if [ -z "$variante" ]; then
             diz "O certificado NÃO abre com a senha: $(tail -1 "$dir/abrir.txt")"
             echo "::error title=Certificado e senha não combinam::O certificado do secret CSC_LINK não abre com a senha do secret CSC_KEY_PASSWORD. Cole de novo a senha, só a linha do valor."
             exit 1
           fi
+          # Daqui em diante vale a senha "limpa", sem o final invisível.
+          SENHA_P12="$(senha_como "$variante")"
+          export SENHA_P12
+          echo "::add-mask::$SENHA_P12"
           diz "O certificado abre com a senha (leitura: $variante)."
           if [ "$variante" != "como-veio" ]; then
             echo "::warning title=Senha com algo a mais::O secret CSC_KEY_PASSWORD tem caracteres além da senha. O build seguiu ignorando o excesso, mas vale colar o valor de novo."
+          fi
+          if [ -n "$sobra" ]; then
+            diz "O .p12 foi gravado com uma quebra de linha invisível no fim da senha; ele será regravado com a senha sem ela."
+            echo "::warning title=Certificado gravado com a senha errada::O arquivo .p12 foi criado com uma quebra de linha invisível no fim da senha. O build regrava o certificado com a senha certa a cada execução; para resolver de vez, gere o .p12 de novo e atualize o secret CSC_LINK."
           fi
           echo "SENHA_VARIANTE=$variante" >> "$GITHUB_ENV"
 
@@ -188,12 +203,16 @@ jobs:
           }
 
           escolhido=""
-          diz "Formato original:"
-          if importa "$dir/original.p12"; then
-            escolhido="$dir/original.p12"
-          else
-            openssl pkcs12 -in "$dir/original.p12" -passin env:SENHA_P12 -nodes -out "$dir/tudo.pem" > /dev/null 2>&1
-            for formato in "padrao" "aes-sha256 -keypbe AES-256-CBC -certpbe AES-256-CBC -macalg sha256" "3des-sha1 -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1"; do
+          # O arquivo original só serve como está se a senha dele for a limpa.
+          if [ -z "$sobra" ]; then
+            diz "Formato original:"
+            if importa "$dir/original.p12"; then
+              escolhido="$dir/original.p12"
+            fi
+          fi
+          if [ -z "$escolhido" ]; then
+            openssl pkcs12 -in "$dir/original.p12" -passin env:SENHA_ABRE -nodes -out "$dir/tudo.pem" > /dev/null 2>&1
+            for formato in "3des-sha1 -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1" "padrao" "aes-sha256 -keypbe AES-256-CBC -certpbe AES-256-CBC -macalg sha256"; do
               # shellcheck disable=SC2086
               if regrava $formato; then
                 escolhido="$dir/${formato%% *}.p12"

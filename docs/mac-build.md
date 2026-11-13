@@ -53,8 +53,12 @@ a release mais nova que tiver o arquivo. A primeira foi a `v1.0.1-mac`. Uma
 tag terminada em `-mac` cria uma release só de Mac, que não toma o lugar da
 marcada como a mais recente.
 
+Antes de entregar os instaladores, o workflow instala cada `.dmg`, abre o app
+de verdade e confere que ele cria a janela e continua aberto. Se o app fechar
+sozinho, a execução falha e nada é publicado.
+
 Acompanhe em <https://github.com/viniciusgambeta/mde-download-/actions>. Leva
-de 10 a 15 minutos. No fim da página da execução, em **Artifacts**, fica o
+de 15 a 20 minutos. No fim da página da execução, em **Artifacts**, fica o
 arquivo `MeDaUmDownload-mac`, um zip com os dois instaladores (para baixar é
 preciso estar logado no GitHub):
 
@@ -90,7 +94,38 @@ O ícone da barra de menus
 mesmo ícone reduzido para 18 e 36 pixels, sem a margem transparente. Se o
 ícone do app mudar, ele precisa ser gerado de novo.
 
-## 4. Se a execução falhar
+## 4. Nome do app no Mac
+
+Por dentro, o app de Mac se chama **Me da um Download**, sem acento: é o nome
+da pasta `.app` e dos programas que vão dentro dela. No Finder, no Dock e na
+barra de menus aparece **Me dá um Download**, com acento. No Monitor de
+Atividade aparece o nome sem acento.
+
+Isso é de propósito. Ao abrir, o Electron compara letra por letra o caminho
+dos programas auxiliares dele com o que está no disco, e um "á" pode estar
+gravado de dois jeitos (a letra inteira, ou "a" seguido do acento). O disco do
+`.dmg` grava do segundo jeito, a comparação falha e o app fecha no instante em
+que abre. Foi o que aconteceu com a primeira versão publicada.
+
+Na prática:
+
+- gere sempre pelo `npm run dist:mac`, que já passa o nome sem acento. O
+  [after-pack](../scripts/after-pack.cjs) recusa gerar um app de Mac com
+  acento no nome dos arquivos;
+- o nome com acento vem dos arquivos `InfoPlist.strings` que o after-pack
+  cria, um por idioma. Se alguém renomear o app no Finder, o macOS passa a
+  mostrar o nome que a pessoa deu.
+
+## 5. Testar um instalador já publicado
+
+O workflow **Teste de abertura no macOS**
+([.github/workflows/teste-mac.yml](../.github/workflows/teste-mac.yml)) baixa
+os instaladores de uma release, instala e abre o app no macOS 15 e no 26, com
+chip Apple e com Intel. Ele roda quando o arquivo do workflow muda na branch
+`mac` e pelo botão **Run workflow** (informando a tag). Se o app fechar, o
+relatório do crash aparece em **Annotations**.
+
+## 6. Se a execução falhar
 
 O motivo aparece no topo da página da execução, em **Annotations**: o
 workflow publica ali o fim do registro do passo que falhou, então não é
@@ -103,6 +138,8 @@ preciso abrir o log.
 | `Certificado recusado pelo macOS` | O `.p12` abre com a senha, mas não tem um certificado "Developer ID Application" com a chave privada, ou o macOS não aceitou o formato |
 | `Chave de notarização inválida` | Colar de novo `APPLE_API_KEY_P8`, com o conteúdo do arquivo `.p8` |
 | `Equipe diferente` | `APPLE_TEAM_ID` não é a equipe do certificado |
+| `O app fecha ao abrir` ou `O app abriu sem janela` | O instalador saiu, mas o app não funciona: nada foi publicado. O fim do registro mostra o que o app escreveu antes de cair |
+| `O nome ... tem acento` | O app de Mac foi gerado sem passar pelo `npm run dist:mac` (seção 4) |
 | `A required agreement is missing or has expired` | Entrar em <https://developer.apple.com/account> e aceitar os contratos pendentes |
 | `Invalid credentials` ou erro 401 na notarização | Conferir `APPLE_API_KEY_ID` e `APPLE_API_ISSUER`, e se a chave de API não foi revogada |
 
@@ -112,6 +149,10 @@ arquivo de onde ela foi lida terminava com uma quebra de linha). O workflow
 contorna isso regravando o certificado a cada execução. Para o aviso sumir,
 gere o `.p12` de novo, como descrito no fim deste guia, e atualize o secret
 `CSC_LINK`.
+
+Outro aviso que não impede o build: **Versão Intel não testada**. O teste
+abre a versão Intel pelo Rosetta (o tradutor da Apple); se o runner não tiver
+o Rosetta e não der para instalá-lo, só a versão de chip Apple é aberta.
 
 ## Gerar num Mac, sem o GitHub
 

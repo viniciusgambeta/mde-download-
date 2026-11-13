@@ -1,12 +1,16 @@
 # Roteiro de teste no Mac
 
-Leva uns 15 minutos. A versão de Mac foi escrita num computador com Windows,
-então este roteiro é a primeira vez que ela roda de verdade. Anote o número
-de cada passo que não sair como descrito e, se der, tire um print
-(`Cmd + Shift + 4`).
+Leva uns 15 minutos. A versão de Mac foi escrita num computador com Windows.
+O GitHub confere sozinho que o app instala, abre e mostra a janela; o que
+este roteiro testa é o uso de verdade, que só uma pessoa num Mac consegue
+ver. Anote o número de cada passo que não sair como descrito e, se der, tire
+um print (`Cmd + Shift + 4`).
 
 ## Antes de começar
 
+0. Se você instalou a primeira versão, a que fechava sozinha ao abrir, arraste
+   o **Me dá um Download** antigo da pasta Aplicativos para o Lixo e baixe o
+   instalador de novo. O app novo não substitui o antigo sozinho.
 1. Veja qual é o Mac: menu da maçã (canto superior esquerdo) › Sobre Este Mac.
    - "Chip Apple" (M1, M2...): use o arquivo que termina em `arm64.dmg`.
    - "Processador Intel": use o que termina em `x64.dmg`.

@@ -8,11 +8,16 @@ const { spawn } = require('node:child_process');
 const { pipeline } = require('node:stream/promises');
 const { Readable } = require('node:stream');
 
-const YTDLP_URL = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe';
+const IS_WIN = process.platform === 'win32';
+const EXE = IS_WIN ? '.exe' : '';
+
+// No Linux usamos a versão "standalone" do yt-dlp, que já traz o Python dentro.
+const YTDLP_ASSET = IS_WIN ? 'yt-dlp.exe' : (process.arch === 'arm64' ? 'yt-dlp_linux_aarch64' : 'yt-dlp_linux');
+const YTDLP_URL = `https://github.com/yt-dlp/yt-dlp/releases/latest/download/${YTDLP_ASSET}`;
 const UPDATE_EVERY = 24 * 60 * 60 * 1000;
 
 const binDir = () => path.join(app.getPath('userData'), 'bin');
-const ytDlpPath = () => path.join(binDir(), 'yt-dlp.exe');
+const ytDlpPath = () => path.join(binDir(), `yt-dlp${EXE}`);
 
 // No app instalado o Cobalt fica em resources/cobalt; em desenvolvimento, em vendor/cobalt.
 const cobaltDir = () => (app.isPackaged
@@ -20,7 +25,7 @@ const cobaltDir = () => (app.isPackaged
     : path.join(app.getAppPath(), 'vendor', 'cobalt'));
 
 // O ffmpeg vem junto com o Cobalt (pacote ffmpeg-static).
-const ffmpegPath = () => path.join(cobaltDir(), 'node_modules', 'ffmpeg-static', 'ffmpeg.exe');
+const ffmpegPath = () => path.join(cobaltDir(), 'node_modules', 'ffmpeg-static', `ffmpeg${EXE}`);
 
 let ensuring = null;
 
@@ -34,6 +39,8 @@ function ensureYtDlp() {
             const res = await net.fetch(YTDLP_URL);
             if (!res.ok) throw new Error(`Não consegui baixar o yt-dlp (HTTP ${res.status}).`);
             await pipeline(Readable.fromWeb(res.body), fs.createWriteStream(tmp));
+            // Fora do Windows o arquivo precisa da permissão de execução.
+            if (!IS_WIN) fs.chmodSync(tmp, 0o755);
             fs.renameSync(tmp, ytDlpPath());
             return ytDlpPath();
         })().finally(() => { ensuring = null; });

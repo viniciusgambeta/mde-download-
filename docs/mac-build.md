@@ -46,6 +46,13 @@ O workflow roda sozinho em três situações:
 
 Um push que só altera arquivos `.md` não dispara o workflow.
 
+Quando a execução vem de uma tag, os dois instaladores também são anexados à
+release dessa tag no GitHub (criada na hora, se ainda não existir). É dessa
+release que o site baixa os instaladores de Mac: ele usa, para cada sistema,
+a release mais nova que tiver o arquivo. A primeira foi a `v1.0.1-mac`. Uma
+tag terminada em `-mac` cria uma release só de Mac, que não toma o lugar da
+marcada como a mais recente.
+
 Acompanhe em <https://github.com/viniciusgambeta/mde-download-/actions>. Leva
 de 10 a 15 minutos. No fim da página da execução, em **Artifacts**, fica o
 arquivo `MeDaUmDownload-mac`, um zip com os dois instaladores (para baixar é

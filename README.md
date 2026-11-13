@@ -94,10 +94,11 @@ usar uma conta secundária.
 - O TikTok bloqueia consultas automatizadas de tempos em tempos. O app tenta
   de novo sozinho, mas às vezes é preciso repetir.
 - Sem login, o Instagram às vezes não libera fotos avulsas.
-- Os recursos do Instagram que dependem de login e a instalação do Whisper
-  pelo app (whisper.cpp) foram escritos mas ainda não passaram por teste
-  completo. Se algo falhar, o motivo fica registrado em
-  `%APPDATA%\MeDaUmDownload\falhas.log`.
+- Os destaques do Instagram e a instalação do Whisper pelo app (whisper.cpp)
+  foram escritos mas ainda não passaram por teste completo. Se algo falhar, o
+  motivo fica registrado em `%APPDATA%\MeDaUmDownload\falhas.log`.
+- A foto de perfil do Instagram vem no tamanho original que a conta enviou
+  (até 1080×1080; contas antigas podem ter só 320×320).
 - Só há versão para Windows 10 e 11 de 64 bits.
 
 ## Como funciona
@@ -164,3 +165,5 @@ licença:
 | [Electron](https://github.com/electron/electron) | MIT | Base do app |
 | [whisper.cpp](https://github.com/ggml-org/whisper.cpp) | MIT | Opcional, baixado só se você aceitar |
 | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) | MIT | Opcional, usado se já estiver instalado |
+| [Lucide](https://lucide.dev/) | ISC | Ícones da interface |
+| [Simple Icons](https://simpleicons.org/) | CC0 1.0 | Símbolos das redes (as marcas pertencem aos seus donos) |

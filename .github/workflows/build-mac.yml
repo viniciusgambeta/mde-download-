@@ -446,3 +446,50 @@ jobs:
               anotar("Fim do registro: " + nome, linhas.join("\n"));
             }
           ' "$RUNNER_TEMP"
+
+  # Quando a execução vem de uma tag, os instaladores também vão para a
+  # release dessa tag no GitHub, que é de onde o site os baixa. Se a release
+  # ainda não existir, ela é criada. Só este job pode escrever no repositório.
+  publicar:
+    name: Anexar à release
+    needs: dmg
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Anexar os instaladores à release da tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh run download "$GITHUB_RUN_ID" --name MeDaUmDownload-mac --dir instaladores
+          ls -l instaladores
+
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" instaladores/*.dmg --clobber
+          else
+            {
+              echo "Instaladores para macOS 13 (Ventura) ou mais novo, assinados e verificados pela Apple."
+              echo
+              echo "- O arquivo que termina em \`arm64.dmg\` é para Macs com chip Apple (M1 ou mais novo)."
+              echo "- O arquivo que termina em \`x64.dmg\` é para Macs com processador Intel."
+            } > notas.md
+            # Uma release só de Mac (tag terminada em "-mac") não toma o lugar
+            # da versão marcada como a mais recente, que tem o instalador de Windows.
+            versao="${TAG#v}"
+            titulo="Me dá um Download $versao"
+            mais_recente=""
+            case "$TAG" in
+              *-mac*)
+                mais_recente="--latest=false"
+                titulo="Me dá um Download ${versao%%-mac*} para Mac"
+                ;;
+            esac
+            # shellcheck disable=SC2086
+            gh release create "$TAG" instaladores/*.dmg --verify-tag $mais_recente \
+              --title "$titulo" --notes-file notas.md
+          fi
+          gh release view "$TAG" --json assets --jq '.assets[] | "\(.name) \(.size)"'

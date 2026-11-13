@@ -33,8 +33,6 @@ jobs:
             arquivo: arm64
           - sistema: macos-15
             arquivo: arm64
-          - sistema: macos-14
-            arquivo: arm64
           - sistema: macos-15-intel
             arquivo: x64
     runs-on: ${{ matrix.sistema }}
@@ -206,3 +204,212 @@ jobs:
               anotar("notice", nome, texto);
             }
           ' "$RUNNER_TEMP" "${{ matrix.sistema }} $ARQUIVO"
+
+  # TEMPORÁRIO: descobre em que ponto o app cai. Traduz o relatório do crash
+  # com os símbolos do Electron e roda o começo do app passo a passo.
+  diagnostico:
+    name: Diagnóstico do crash (temporário)
+    runs-on: macos-15
+    timeout-minutes: 25
+    env:
+      TAG: ${{ inputs.tag || 'v1.0.1-mac' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Instalar o app e as dependências
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/baixado"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "*-mac-arm64.dmg" --dir "$RUNNER_TEMP/baixado"
+          dmg=("$RUNNER_TEMP"/baixado/*.dmg)
+          hdiutil attach -nobrowse -readonly -mountpoint "$RUNNER_TEMP/volume" "${dmg[0]}" > /dev/null
+          origem=("$RUNNER_TEMP"/volume/*.app)
+          app="/Applications/$(basename "${origem[0]}")"
+          ditto "${origem[0]}" "$app"
+          echo "APP=$app" >> "$GITHUB_ENV"
+          npm ci
+
+      - name: Traduzir o relatório do crash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          exec > >(tee "$RUNNER_TEMP/diag-1-pilha.log") 2>&1
+          date +%s > "$RUNNER_TEMP/inicio"
+          executavel=("$APP"/Contents/MacOS/*)
+          "${executavel[0]}" > /dev/null 2>&1 || echo "saiu com código $?"
+          sleep 20
+
+          versao="$(plutil -extract CFBundleVersion raw "$APP/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/Info.plist")"
+          echo "Electron do app: $versao"
+          gh release download "v$versao" --repo electron/electron --pattern "electron-v$versao-darwin-arm64-symbols.zip" --dir "$RUNNER_TEMP/simbolos"
+          unzip -q -o "$RUNNER_TEMP"/simbolos/*.zip -d "$RUNNER_TEMP/simbolos"
+          sym="$(find "$RUNNER_TEMP/simbolos" -name 'Electron Framework.sym' | head -n 1)"
+          echo "Símbolos: $sym ($(stat -f %z "$sym") bytes)"
+          head -n 1 "$sym"
+          dwarfdump --uuid "$APP/Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework" || true
+
+          cat > "$RUNNER_TEMP/pilha.js" <<'JS'
+          const fs = require("fs");
+          const path = require("path");
+          const readline = require("readline");
+          const [dir, sym] = process.argv.slice(2);
+          const desde = Number(fs.readFileSync(path.join(dir, "inicio"), "utf8")) * 1000;
+          const pasta = path.join(process.env.HOME, "Library/Logs/DiagnosticReports");
+          const nomes = fs.readdirSync(pasta).filter((n) => /\.ips$/.test(n) && fs.statSync(path.join(pasta, n)).mtimeMs >= desde);
+          if (!nomes.length) { console.log("nenhum relatório de crash"); process.exit(0); }
+          const texto = fs.readFileSync(path.join(pasta, nomes[0]), "utf8");
+          const corpo = JSON.parse(texto.slice(texto.indexOf("\n") + 1));
+          const fio = corpo.threads.find((f) => f.triggered) || corpo.threads[corpo.faultingThread];
+          const quadros = fio.frames.slice(0, 45).map((q, i) => ({
+            imagem: (corpo.usedImages[q.imageIndex] || {}).name || "?",
+            // Fora do topo, o endereço é o de retorno: um byte antes cai na chamada.
+            alvo: q.imageOffset - (i ? 1 : 0),
+            simbolo: q.symbol || "",
+          }));
+          const alvos = quadros.filter((q) => q.imagem === "Electron Framework").map((q) => q.alvo);
+          const arquivos = new Map();
+          const achados = new Map();
+          let atual = null;
+          const rl = readline.createInterface({ input: fs.createReadStream(sym), crlfDelay: Infinity });
+          rl.on("line", (l) => {
+            if (l.startsWith("FILE ")) { const i = l.indexOf(" ", 5); arquivos.set(l.slice(5, i), l.slice(i + 1)); return; }
+            if (l.startsWith("FUNC ")) {
+              const p = l.split(" ");
+              const k = p[1] === "m" ? 2 : 1;
+              const inicio = parseInt(p[k], 16);
+              const fim = inicio + parseInt(p[k + 1], 16);
+              const meus = alvos.filter((a) => a >= inicio && a < fim);
+              atual = meus.length ? meus : null;
+              for (const a of meus) achados.set(a, { nome: p.slice(k + 3).join(" ") });
+              return;
+            }
+            if (l.startsWith("PUBLIC ") || l.startsWith("STACK ")) { atual = null; return; }
+            if (!atual || l.startsWith("INLINE")) return;
+            const p = l.split(" ");
+            if (p.length !== 4) return;
+            const inicio = parseInt(p[0], 16);
+            const fim = inicio + parseInt(p[1], 16);
+            for (const a of atual) if (a >= inicio && a < fim) Object.assign(achados.get(a), { linha: p[2], arquivo: p[3] });
+          });
+          rl.on("close", () => {
+            console.log("excecao: " + JSON.stringify(corpo.exception));
+            for (const q of quadros) {
+              const r = q.imagem === "Electron Framework" ? achados.get(q.alvo) : null;
+              const onde = r && r.arquivo ? " (" + String(arquivos.get(r.arquivo) || "?").split("/").slice(-3).join("/") + ":" + r.linha + ")" : "";
+              console.log(r ? r.nome.slice(0, 150) + onde : q.imagem + " " + q.simbolo);
+            }
+          });
+          JS
+          node "$RUNNER_TEMP/pilha.js" "$RUNNER_TEMP" "$sym"
+
+      - name: Rodar o começo do app passo a passo
+        if: always()
+        run: |
+          exec > >(tee "$RUNNER_TEMP/diag-2-sonda.log") 2>&1
+          sonda="$RUNNER_TEMP/sonda"
+          mkdir -p "$sonda"
+          cat > "$sonda/package.json" <<'JSON'
+          { "name": "me-da-um-download", "productName": "Me dá um Download", "version": "1.0.1", "main": "main.js" }
+          JSON
+          cat > "$sonda/main.js" <<'JS'
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const log = (m) => fs.appendFileSync(process.env.SONDA_LOG, m + "\n");
+          const pular = new Set((process.env.SONDA_PULAR || "").split(",").filter(Boolean));
+          const passo = (nome, fn) => {
+            if (pular.has(nome)) { log("pulado: " + nome); return undefined; }
+            log("vai: " + nome);
+            const r = fn();
+            log("ok: " + nome + (r === undefined ? "" : " -> " + String(r).slice(0, 160)));
+            return r;
+          };
+          log("inicio electron " + process.versions.electron + " " + process.arch);
+          const { app, BrowserWindow, Tray, Menu, nativeTheme } = require("electron");
+          log("nome=" + app.getName() + " empacotado=" + app.isPackaged);
+          passo("setName", () => app.setName("Me dá um Download"));
+          passo("ua-ler", () => app.userAgentFallback);
+          passo("ua-gravar", () => { app.userAgentFallback = app.userAgentFallback.replace(/ \S+\/\S+(?= Chrome\/)/, ""); return app.userAgentFallback; });
+          passo("setPath", () => app.setPath("userData", path.join(app.getPath("appData"), "MeDaUmDownload-sonda")));
+          passo("tema", () => nativeTheme.shouldUseDarkColors);
+          passo("instancia-unica", () => app.requestSingleInstanceLock());
+          app.whenReady().then(() => {
+            log("pronto");
+            passo("modelid", () => app.setAppUserModelId("local.medaumdownload.app"));
+            passo("menu", () => Menu.setApplicationMenu(Menu.buildFromTemplate([{ label: "Me dá um Download", submenu: [{ role: "about" }, { role: "quit" }] }])));
+            passo("janela", () => {
+              const w = new BrowserWindow({ width: 400, height: 300, title: "Me dá um Download", titleBarStyle: "hidden", trafficLightPosition: { x: 16, y: 14 } });
+              w.loadURL("data:text/html,ok");
+            });
+            passo("bandeja", () => { global.bandeja = new Tray(process.env.SONDA_ICONE); });
+            setTimeout(() => { log("fim"); app.exit(0); }, 4000);
+          });
+          JS
+
+          # Uso: sondar <rótulo> <comando...>. Se o app cair no meio de um
+          # passo, roda de novo pulando esse passo, até chegar ao fim.
+          sondar() {
+            local rotulo="$1" pular="" ultimo pid; shift
+            for rodada in 1 2 3 4 5 6; do
+              : > "$RUNNER_TEMP/sonda.log"
+              SONDA_LOG="$RUNNER_TEMP/sonda.log" SONDA_PULAR="$pular" SONDA_ICONE="$GITHUB_WORKSPACE/src/renderer/assets/tray-mac.png" \
+                "$@" > "$RUNNER_TEMP/sonda.saida" 2>&1 &
+              pid=$!
+              for segundo in $(seq 1 15); do sleep 1; kill -0 "$pid" 2> /dev/null || break; done
+              kill -9 "$pid" 2> /dev/null || true
+              wait "$pid" 2> /dev/null || true
+              echo "--- $rotulo, rodada $rodada (pulando: ${pular:-nada})"
+              cat "$RUNNER_TEMP/sonda.log"
+              tail -n 4 "$RUNNER_TEMP/sonda.saida" | cut -c 1-300
+              if grep -q '^fim$' "$RUNNER_TEMP/sonda.log"; then break; fi
+              ultimo="$(tail -n 1 "$RUNNER_TEMP/sonda.log")"
+              case "$ultimo" in
+                "vai: "*) pular="${pular:+$pular,}${ultimo#vai: }" ;;
+                *) echo "caiu fora de um passo"; break ;;
+              esac
+            done
+          }
+
+          # 1. O app instalado, com o código trocado pela sonda.
+          copia="$RUNNER_TEMP/copia/$(basename "$APP")"
+          mkdir -p "$RUNNER_TEMP/copia"
+          ditto "$APP" "$copia"
+          mv "$copia/Contents/Resources/app.asar" "$copia/Contents/Resources/app.asar.fora"
+          ditto "$sonda" "$copia/Contents/Resources/app"
+          executavel=("$copia"/Contents/MacOS/*)
+          sondar "app instalado + sonda" "${executavel[0]}"
+
+          # 2. O Electron puro, sem empacotar, com a mesma sonda.
+          sondar "Electron puro + sonda" "$GITHUB_WORKSPACE/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron" "$sonda"
+
+          # 3. O app de verdade, sem empacotar.
+          echo "--- app de verdade sem empacotar"
+          ELECTRON_ENABLE_LOGGING=1 "$GITHUB_WORKSPACE/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron" "$GITHUB_WORKSPACE" > "$RUNNER_TEMP/dev.saida" 2>&1 &
+          pid=$!
+          vivo=0
+          for segundo in $(seq 1 20); do sleep 1; if kill -0 "$pid" 2> /dev/null; then vivo=$segundo; else break; fi; done
+          echo "ficou de pé até o segundo $vivo de 20"
+          kill -9 "$pid" 2> /dev/null || true
+          wait "$pid" 2> /dev/null || true
+          tail -n 15 "$RUNNER_TEMP/dev.saida" | cut -c 1-300
+
+      - name: Resumir o diagnóstico
+        if: always()
+        run: |
+          node -e '
+            const fs = require("fs");
+            const path = require("path");
+            const dir = process.argv[1];
+            for (const nome of fs.readdirSync(dir).filter((n) => /^diag-.*\.log$/.test(n)).sort()) {
+              const texto = fs.readFileSync(path.join(dir, nome), "utf8").replace(/\x1b\[[0-9;]*m/g, "").split(/\r?\n/).filter((l) => l.trim()).join("\n");
+              for (let i = 0; i < texto.length && i < 18000; i += 6000) {
+                const codificado = texto.slice(i, i + 6000).replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+                console.log("::notice title=" + nome + " parte " + (i / 6000 + 1) + "::" + codificado);
+              }
+            }
+          ' "$RUNNER_TEMP"

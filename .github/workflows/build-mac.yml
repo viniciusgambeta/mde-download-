@@ -100,10 +100,6 @@ jobs:
           }
           trap publicar EXIT
 
-          SENHA_P12="$(printf '%s' "$CSC_KEY_PASSWORD" | tr -d '\r\n')"
-          export SENHA_P12
-          echo "::add-mask::$SENHA_P12"
-
           node -e '
             const fs = require("fs");
             const crypto = require("crypto");
@@ -116,12 +112,48 @@ jobs:
           ' "$dir/original.p12" | tee -a "$relatorio"
           diz "openssl do runner: $(openssl version)"
 
-          if ! erro="$(openssl pkcs12 -in "$dir/original.p12" -passin env:SENHA_P12 -noout 2>&1)"; then
-            diz "O certificado NÃO abre com a senha: $(printf '%s' "$erro" | tail -1)"
-            echo "::error title=Certificado e senha não combinam::O conteúdo do secret CSC_LINK não abre com a senha do secret CSC_KEY_PASSWORD. Cole os dois de novo, cada um só com a linha do valor."
+          # A senha pode ter sido colada com algo a mais (um espaço no fim, por
+          # exemplo). Tenta as leituras possíveis e fica com a que abre o
+          # certificado. O relatório só diz o formato da senha, nunca o valor.
+          senha_como() {
+            VARIANTE="$1" node -e '
+              const bruta = (process.env.CSC_KEY_PASSWORD || "").replace(/[\r\n]+$/, "");
+              const variantes = {
+                "como-veio": bruta,
+                "sem-espacos-nas-pontas": bruta.trim(),
+                "primeira-palavra": bruta.trim().split(/\s+/)[0] || "",
+                "so-letras-numeros-e-simbolos": bruta.replace(/[^\x21-\x7e]/g, ""),
+              };
+              process.stdout.write(variantes[process.env.VARIANTE] ?? bruta);
+            '
+          }
+          node -e '
+            const bruta = process.env.CSC_KEY_PASSWORD || "";
+            const espacos = (bruta.match(/\s/g) || []).length;
+            const estranhos = (bruta.match(/[^\x20-\x7e\s]/g) || []).length;
+            console.log("Senha: " + bruta.length + " caracteres recebidos, " + bruta.trim().length + " sem os espaços das pontas; espaços ou quebras de linha: " + espacos + "; caracteres fora do teclado comum: " + estranhos + "; palavras: " + bruta.trim().split(/\s+/).length);
+          ' | tee -a "$relatorio"
+
+          variante=""
+          for tentativa in como-veio sem-espacos-nas-pontas primeira-palavra so-letras-numeros-e-simbolos; do
+            SENHA_P12="$(senha_como "$tentativa")"
+            export SENHA_P12
+            echo "::add-mask::$SENHA_P12"
+            if openssl pkcs12 -in "$dir/original.p12" -passin env:SENHA_P12 -noout > "$dir/abrir.txt" 2>&1; then
+              variante="$tentativa"
+              break
+            fi
+          done
+          if [ -z "$variante" ]; then
+            diz "O certificado NÃO abre com a senha: $(tail -1 "$dir/abrir.txt")"
+            echo "::error title=Certificado e senha não combinam::O certificado do secret CSC_LINK não abre com a senha do secret CSC_KEY_PASSWORD. Cole de novo a senha, só a linha do valor."
             exit 1
           fi
-          diz "O certificado abre com a senha."
+          diz "O certificado abre com a senha (leitura: $variante)."
+          if [ "$variante" != "como-veio" ]; then
+            echo "::warning title=Senha com algo a mais::O secret CSC_KEY_PASSWORD tem caracteres além da senha. O build seguiu ignorando o excesso, mas vale colar o valor de novo."
+          fi
+          echo "SENHA_VARIANTE=$variante" >> "$GITHUB_ENV"
 
           # Importa o arquivo num chaveiro descartável: é o mesmo comando que
           # o electron-builder usa na hora de assinar.
@@ -204,9 +236,19 @@ jobs:
           export APPLE_API_KEY="$RUNNER_TEMP/AuthKey.p8"
 
           # Um espaço ou uma quebra de linha colados por engano junto com um
-          # secret fariam a senha ou a chave serem recusadas.
+          # secret fariam a senha ou a chave serem recusadas. Para a senha vale
+          # a leitura que o passo "Preparar o certificado" viu funcionar.
           sem_espacos() { printf '%s' "$1" | tr -d '[:space:]'; }
-          CSC_KEY_PASSWORD="$(printf '%s' "$CSC_KEY_PASSWORD" | tr -d '\r\n')"
+          CSC_KEY_PASSWORD="$(VARIANTE="${SENHA_VARIANTE:-como-veio}" node -e '
+            const bruta = (process.env.CSC_KEY_PASSWORD || "").replace(/[\r\n]+$/, "");
+            const variantes = {
+              "como-veio": bruta,
+              "sem-espacos-nas-pontas": bruta.trim(),
+              "primeira-palavra": bruta.trim().split(/\s+/)[0] || "",
+              "so-letras-numeros-e-simbolos": bruta.replace(/[^\x21-\x7e]/g, ""),
+            };
+            process.stdout.write(variantes[process.env.VARIANTE] ?? bruta);
+          ')"
           APPLE_API_KEY_ID="$(sem_espacos "$APPLE_API_KEY_ID")"
           APPLE_API_ISSUER="$(sem_espacos "$APPLE_API_ISSUER")"
           for valor in "$CSC_KEY_PASSWORD" "$APPLE_API_KEY_ID" "$APPLE_API_ISSUER"; do

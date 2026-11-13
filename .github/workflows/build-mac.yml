@@ -229,6 +229,64 @@ jobs:
           diz "Certificado usado no build: ${escolhido##*/}"
           echo "P12_PRONTO=$escolhido" >> "$GITHUB_ENV"
 
+      # A Apple só aceita a chave de API num arquivo .p8 "limpo": a linha
+      # BEGIN, o conteúdo em linhas de 64 caracteres e a linha END. Este passo
+      # monta esse arquivo a partir do secret, ignorando qualquer texto colado
+      # junto, e confere se o resultado é mesmo uma chave.
+      - name: Preparar a chave de notarização
+        if: steps.credenciais.outputs.assinar == 'true'
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          exec > >(tee "$RUNNER_TEMP/passo-chave.log") 2>&1
+          arquivo="$RUNNER_TEMP/AuthKey.p8"
+          relatorio="$RUNNER_TEMP/chave-relatorio.txt"
+          # O relatório só fala do formato (quantas linhas, de que tamanho),
+          # nunca do conteúdo, e vira uma anotação na página da execução.
+          publicar() {
+            node -e 'const t = require("fs").readFileSync(process.argv[1], "utf8").trim(); if (t) console.log("::notice title=Chave de notarização::" + t.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A"));' "$relatorio" || true
+          }
+          : > "$relatorio"
+          trap publicar EXIT
+
+          node -e '
+            const fs = require("fs");
+            const [arquivo, relatorio] = process.argv.slice(1);
+            const bruto = process.env.APPLE_API_KEY_P8 || "";
+            const linhas = bruto.split(/\r\n|\r|\n/);
+            const relato = ["Chave recebida: " + bruto.length + " caracteres em " + linhas.length + " linha(s), de tamanhos " + linhas.map((l) => l.length).join(", ")];
+
+            // Fica só com o que está entre a última linha BEGIN e a linha END.
+            let corpo = bruto;
+            let rotulo = "";
+            let antes = null;
+            const fim = [...bruto.matchAll(/-----END ([A-Z ]*)PRIVATE KEY-----/g)].pop();
+            if (fim) {
+              const ateOFim = bruto.slice(0, fim.index);
+              const inicio = [...ateOFim.matchAll(/-----BEGIN ([A-Z ]*)PRIVATE KEY-----/g)].pop();
+              if (inicio) {
+                corpo = ateOFim.slice(inicio.index + inicio[0].length);
+                rotulo = inicio[1];
+                antes = inicio.index;
+              }
+            }
+            corpo = corpo.replace(/[^A-Za-z0-9+\/=]/g, "");
+            const bytes = Buffer.from(corpo, "base64");
+            relato.push("Linhas BEGIN e END: " + (antes === null ? "não vieram" : "vieram, com " + antes + " caracteres de texto antes do BEGIN") + "; conteúdo: " + corpo.length + " caracteres, " + bytes.length + " bytes; parece uma chave: " + (bytes[0] === 0x30));
+            const pem = "-----BEGIN " + rotulo + "PRIVATE KEY-----\n" + (corpo.match(/.{1,64}/g) || []).join("\n") + "\n-----END " + rotulo + "PRIVATE KEY-----\n";
+            fs.writeFileSync(arquivo, pem, { mode: 0o600 });
+            fs.writeFileSync(relatorio, relato.join("\n") + "\n");
+          ' "$arquivo" "$relatorio"
+          cat "$relatorio"
+
+          if ! openssl pkey -in "$arquivo" -noout > "$RUNNER_TEMP/chave-erro.txt" 2>&1; then
+            echo "A chave montada não é válida: $(tail -1 "$RUNNER_TEMP/chave-erro.txt")" | tee -a "$relatorio"
+            echo "::error title=Chave de notarização inválida::O secret APPLE_API_KEY_P8 não contém uma chave válida. Cole de novo o conteúdo do arquivo .p8, da linha BEGIN PRIVATE KEY até a linha END PRIVATE KEY."
+            exit 1
+          fi
+          echo "A chave é válida e foi gravada no formato que a Apple aceita." | tee -a "$relatorio"
+          echo "APPLE_API_KEY_ARQUIVO=$arquivo" >> "$GITHUB_ENV"
+
       - name: Instalar dependências
         run: npm ci
 
@@ -241,19 +299,14 @@ jobs:
           # O electron-builder lê estas variáveis: o certificado Developer ID
           # (o arquivo .p12 deixado pronto pelo passo "Preparar o certificado")
           # com a senha, e a chave de API do App Store Connect usada na
-          # notarização.
+          # notarização (o arquivo .p8 deixado pronto pelo passo "Preparar a
+          # chave de notarização", na pasta temporária do runner).
           CSC_LINK: ${{ env.P12_PRONTO }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY: ${{ env.APPLE_API_KEY_ARQUIVO }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
-          # O electron-builder espera em APPLE_API_KEY o caminho de um arquivo
-          # .p8, então o conteúdo do secret é gravado na pasta temporária do
-          # runner, que é apagada no fim da execução.
-          printf '%s\n' "$APPLE_API_KEY_P8" | tr -d '\r' > "$RUNNER_TEMP/AuthKey.p8"
-          export APPLE_API_KEY="$RUNNER_TEMP/AuthKey.p8"
-
           # Um espaço ou uma quebra de linha colados por engano junto com um
           # secret fariam a senha ou a chave serem recusadas. Para a senha vale
           # a leitura que o passo "Preparar o certificado" viu funcionar.

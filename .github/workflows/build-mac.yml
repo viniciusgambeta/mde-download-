@@ -361,23 +361,35 @@ jobs:
             spctl --assess --type execute --verbose=4 "$app"
           done
 
-      - name: Publicar os instaladores
-        uses: actions/upload-artifact@v7
-        with:
-          name: MeDaUmDownload-mac${{ steps.credenciais.outputs.sufixo }}
-          path: dist/*.dmg
-          if-no-files-found: error
-
-      # Confere, no app já montado, as partes que só existem no macOS: o modo
-      # Node do Electron (usado pelo Cobalt e pelo yt-dlp), o ffmpeg embutido
-      # e o servidor local do Cobalt.
-      - name: Teste rápido do app gerado
+      # Instala cada .dmg como uma pessoa faria (abre e copia o app) e confere,
+      # no app instalado, o que só existe no macOS: o modo Node do Electron
+      # (usado pelo Cobalt e pelo yt-dlp), o ffmpeg embutido e o servidor local
+      # do Cobalt. Por fim abre o app de verdade, que tem de criar a janela e
+      # continuar de pé. Só depois disso os instaladores saem daqui.
+      - name: Teste do app instalado
         run: |
           exec > >(tee "$RUNNER_TEMP/passo-teste.log") 2>&1
-          # Uso: testar <pasta do .app> [comando na frente, ex.: arch -x86_64]
+          cat > "$RUNNER_TEMP/nomes.swift" <<'SWIFT'
+          import AppKit
+          print("Nome no Finder:", FileManager.default.displayName(atPath: CommandLine.arguments[1]))
+          for aberto in NSWorkspace.shared.runningApplications where aberto.bundleIdentifier == "com.medaumexemplo.downloader" {
+              print("Nome do app aberto:", aberto.localizedName ?? "?")
+          }
+          SWIFT
+
+          # Uso: testar <arquivo .dmg> [comando na frente, ex.: arch -x86_64]
           testar() {
-            local app helper ffmpeg cobalt porta
-            app="$(cd "$1" && pwd)"; shift
+            local dmg nome volume origem app helper ffmpeg cobalt porta respondeu executavel pid
+            dmg="$1"; shift
+            nome="$(basename "$dmg" .dmg)"
+            volume="$RUNNER_TEMP/volume-$nome"
+            hdiutil attach -nobrowse -readonly -mountpoint "$volume" "$dmg" > /dev/null
+            origem=("$volume"/*.app)
+            app="$RUNNER_TEMP/instalado-$nome/$(basename "${origem[0]}")"
+            mkdir -p "$RUNNER_TEMP/instalado-$nome"
+            ditto "${origem[0]}" "$app"
+            hdiutil detach "$volume" > /dev/null || true
+
             helper=("$app"/Contents/Frameworks/*Helper.app)
             helper=("${helper[0]}"/Contents/MacOS/*)
             helper="${helper[0]}"
@@ -385,35 +397,74 @@ jobs:
             ffmpeg="$cobalt/node_modules/ffmpeg-static/ffmpeg"
             porta=9321
 
-            echo "== $app"
+            echo "== $nome"
             ELECTRON_RUN_AS_NODE=1 "$@" "$helper" -e "console.log('modo Node:', process.versions.node, process.arch)"
             "$@" "$ffmpeg" -version | sed -n 1p
 
             # O Cobalt fica no ar enquanto o "sleep" segurar a entrada dele.
-            export API_URL="http://127.0.0.1:$porta/" API_PORT="$porta" API_LISTEN_ADDRESS=127.0.0.1
-            ( cd "$cobalt" && sleep 25 | ELECTRON_RUN_AS_NODE=1 "$@" "$helper" run.mjs > "$RUNNER_TEMP/cobalt.log" 2>&1 ) &
+            ( cd "$cobalt" && export API_URL="http://127.0.0.1:$porta/" API_PORT="$porta" API_LISTEN_ADDRESS=127.0.0.1 \
+              && sleep 25 | ELECTRON_RUN_AS_NODE=1 "$@" "$helper" run.mjs > "$RUNNER_TEMP/cobalt.log" 2>&1 ) &
+            respondeu=0
             for tentativa in $(seq 1 40); do
               if curl -fsS -H "accept: application/json" "http://127.0.0.1:$porta/" > /dev/null 2>&1; then
-                echo "Cobalt respondeu."
-                wait || true
-                return 0
+                respondeu=1
+                break
               fi
               sleep 0.5
             done
-            echo "::error::O Cobalt não respondeu dentro do app."
-            cat "$RUNNER_TEMP/cobalt.log"
-            return 1
+            wait || true
+            if [ "$respondeu" != 1 ]; then
+              echo "::error::O Cobalt não respondeu dentro do app."
+              cat "$RUNNER_TEMP/cobalt.log"
+              return 1
+            fi
+            echo "Cobalt respondeu."
+
+            # O app de verdade: tem de continuar aberto e criar a janela (o
+            # processo "Helper (Renderer)" é quem desenha a janela).
+            executavel=("$app"/Contents/MacOS/*)
+            "$@" "${executavel[0]}" > "$RUNNER_TEMP/app-$nome.log" 2>&1 &
+            pid=$!
+            for segundo in $(seq 1 25); do
+              sleep 1
+              kill -0 "$pid" 2> /dev/null || break
+            done
+            if ! kill -0 "$pid" 2> /dev/null; then
+              echo "::error title=O app fecha ao abrir::Instalado a partir de $nome.dmg, o app não ficou aberto."
+              tail -n 30 "$RUNNER_TEMP/app-$nome.log" || true
+              return 1
+            fi
+            if ! pgrep -f "instalado-$nome/.*Helper \(Renderer\)" > /dev/null; then
+              echo "::error title=O app abriu sem janela::Instalado a partir de $nome.dmg, o app ficou aberto, mas não criou a janela."
+              kill "$pid" 2> /dev/null || true
+              return 1
+            fi
+            swift "$RUNNER_TEMP/nomes.swift" "$app" || true
+            kill "$pid" 2> /dev/null || true
+            wait "$pid" 2> /dev/null || true
+            echo "O app abriu, criou a janela e continuou de pé."
           }
 
-          apps=(dist/mac-arm64/*.app)
-          testar "${apps[0]}"
-          # A versão Intel roda pelo Rosetta, se o runner tiver.
-          if arch -x86_64 /usr/bin/true 2> /dev/null; then
-            apps=(dist/mac/*.app)
-            testar "${apps[0]}" arch -x86_64
-          else
-            echo "Sem Rosetta neste runner: a versão Intel não foi executada aqui."
+          instaladores=(dist/*-mac-arm64.dmg)
+          testar "${instaladores[0]}"
+
+          # A versão Intel roda pelo Rosetta, o tradutor da Apple.
+          if ! arch -x86_64 /usr/bin/true 2> /dev/null; then
+            softwareupdate --install-rosetta --agree-to-license > /dev/null 2>&1 || true
           fi
+          instaladores=(dist/*-mac-x64.dmg)
+          if arch -x86_64 /usr/bin/true 2> /dev/null; then
+            testar "${instaladores[0]}" arch -x86_64
+          else
+            echo "::warning title=Versão Intel não testada::Este runner não tem o Rosetta, então a versão Intel não foi aberta aqui."
+          fi
+
+      - name: Publicar os instaladores
+        uses: actions/upload-artifact@v7
+        with:
+          name: MeDaUmDownload-mac${{ steps.credenciais.outputs.sufixo }}
+          path: dist/*.dmg
+          if-no-files-found: error
 
       # Se um dos passos acima falhar, o registro deles vira anotação no topo
       # da página da execução: dá para ver o erro sem abrir o log. Sai uma

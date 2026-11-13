@@ -35,8 +35,41 @@ exports.default = async function afterPack(context) {
         verbatimSymlinks: true,
     });
 
-    if (mac) prepareMacFfmpeg(path.join(to, 'node_modules', 'ffmpeg-static'), Arch[context.arch]);
+    if (mac) {
+        prepareMacFfmpeg(path.join(to, 'node_modules', 'ffmpeg-static'), Arch[context.arch]);
+        const fileName = context.packager.appInfo.sanitizedProductName;
+        assertPlainMacName(fileName);
+        localizeMacName(resources, context.packager.info.metadata.productName, fileName);
+    }
 };
+
+// No macOS os arquivos do app não podem ter acento no nome. O Electron, ao
+// abrir, compara letra por letra o caminho dos programas auxiliares dele
+// ("... Helper") com o que está no disco, e uma letra acentuada pode estar
+// gravada de dois jeitos ("á" inteiro ou "a" + acento). O disco do .dmg grava
+// do segundo jeito, a comparação falha e o app fecha no instante em que abre.
+// Por isso o "npm run dist:mac" gera o app como "Me da um Download".
+function assertPlainMacName(fileName) {
+    if (/[^\x20-\x7e]/.test(fileName)) {
+        throw new Error(`O nome "${fileName}" tem acento, e no macOS isso faz o app fechar ao abrir. `
+            + 'Gere pelo "npm run dist:mac", que usa um nome sem acento.');
+    }
+}
+
+// O nome com acento continua aparecendo no Finder, no Dock e na barra de
+// menus: o macOS mostra o nome "traduzido" que encontra nestes arquivos, um
+// por idioma, desde que o nome do arquivo do app seja o do Info.plist.
+function localizeMacName(resources, shownName, fileName) {
+    if (!shownName || shownName === fileName) return;
+    const quoted = shownName.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const strings = Buffer.from(`﻿"CFBundleDisplayName" = "${quoted}";\n"CFBundleName" = "${quoted}";\n`, 'utf16le');
+    const languages = new Set(fs.readdirSync(resources).filter((name) => name.endsWith('.lproj')));
+    for (const name of ['en.lproj', 'pt_BR.lproj', 'pt_PT.lproj']) languages.add(name);
+    for (const name of languages) {
+        fs.mkdirSync(path.join(resources, name), { recursive: true });
+        fs.writeFileSync(path.join(resources, name, 'InfoPlist.strings'), strings);
+    }
+}
 
 // O "npm run setup" baixa o ffmpeg do processador da máquina que está gerando
 // o app. Como a mesma máquina gera a versão Apple Silicon (arm64) e a Intel
@@ -83,3 +116,5 @@ function machoArchs(file) {
 
 exports.machoArchs = machoArchs;
 exports.prepareMacFfmpeg = prepareMacFfmpeg;
+exports.assertPlainMacName = assertPlainMacName;
+exports.localizeMacName = localizeMacName;

@@ -6,6 +6,9 @@ const { contextBridge, ipcRenderer } = require('electron');
 const EVENTS = new Set(['job', 'job-removed', 'focus', 'whisper']);
 
 contextBridge.exposeInMainWorld('api', {
+    // 'win32' ou 'darwin': a interface ajusta a barra de título conforme o sistema.
+    platform: process.platform,
+
     detect: (text) => ipcRenderer.invoke('detect', text),
     preview: (text) => ipcRenderer.invoke('preview', text),
     readClipboard: () => ipcRenderer.invoke('clipboard:read'),

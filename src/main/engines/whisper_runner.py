@@ -25,6 +25,9 @@ MODELS = ["large-v3", "large-v3-turbo", "large-v2", "medium", "small"]
 # mesma qualidade na prática. Numa placa de 6 GB o "float16" do large-v3 não
 # cabe junto com os outros programas e fica ~30x mais lento, por isso não é usado.
 ATTEMPTS = [("cuda", "int8_float16"), ("cuda", "int8"), ("cpu", "int8")]
+# No macOS não existe CUDA: vai direto pro processador.
+if sys.platform == "darwin":
+    ATTEMPTS = [("cpu", "int8")]
 
 
 def emit(**event):
@@ -36,6 +39,8 @@ def add_cuda_dlls():
     """O faster-whisper precisa das DLLs de CUDA (cuBLAS/cuDNN). No Windows elas
     costumam vir dentro do PyTorch ou dos pacotes nvidia-*; aqui avisamos ao
     sistema onde procurar, senão a GPU não é usada."""
+    if os.name != "nt":
+        return
     folders = []
     spec = importlib.util.find_spec("torch")
     if spec and spec.origin:

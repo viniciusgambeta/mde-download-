@@ -8,6 +8,7 @@ const net = require('node:net');
 const path = require('node:path');
 const fs = require('node:fs');
 const bins = require('../bins');
+const { nodeRuntime } = require('../platform');
 const direct = require('./direct');
 
 let child = null;
@@ -39,7 +40,7 @@ function start() {
         const port = await freePort();
         const url = `http://127.0.0.1:${port}/`;
 
-        const proc = spawn(process.execPath, [runner], {
+        const proc = spawn(nodeRuntime(), [runner], {
             cwd: dir,
             windowsHide: true,
             // stdin fica aberto de propósito: o run.mjs encerra o Cobalt quando

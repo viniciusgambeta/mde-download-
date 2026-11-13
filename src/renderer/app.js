@@ -3,6 +3,8 @@
 
 const $ = (selector) => document.querySelector(selector);
 
+document.documentElement.classList.toggle('is-mac', api.platform === 'darwin');
+
 const els = {
     app: $('#app'),
     palette: $('#palette'),
@@ -287,7 +289,7 @@ function upsertRow(job) {
     row.subIcon.innerHTML = job.status === 'done' ? ICONS.check : job.status === 'error' ? ICONS.alert : '';
     row.subIcon.hidden = !row.subIcon.innerHTML;
 
-    const actionsKey = `${job.status}:${job.errorCode || ''}:${job.action}`;
+    const actionsKey = `${job.status}:${job.errorCode || ''}:${job.action}:${whisper.state === 'unavailable'}`;
     if (row.actionsKey !== actionsKey) {
         row.actionsKey = actionsKey;
         row.actions.replaceChildren();
@@ -305,15 +307,18 @@ function upsertRow(job) {
             } else if (job.errorCode === 'no-whisper') {
                 // Precisa do Whisper e ele não está neste computador: leva pra
                 // oferta de download (que mostra o tamanho e pede confirmação).
-                const install = el('button', 'text-btn is-strong', 'Baixar Whisper');
-                install.addEventListener('click', (event) => {
-                    event.stopPropagation();
-                    offerWhisper(job.id);
-                });
-                row.actions.append(install);
+                // Onde o download não existe (macOS, por enquanto) fica só o aviso.
+                if (whisper.state !== 'unavailable') {
+                    const install = el('button', 'text-btn is-strong', 'Baixar Whisper');
+                    install.addEventListener('click', (event) => {
+                        event.stopPropagation();
+                        offerWhisper(job.id);
+                    });
+                    row.actions.append(install);
+                }
             } else {
                 // Não achou legenda pronta: oferece transcrever o áudio com o Whisper.
-                if (job.action === 'transcript') {
+                if (job.action === 'transcript' && whisper.state !== 'unavailable') {
                     const useWhisper = el('button', 'text-btn is-strong', 'Usar Whisper');
                     useWhisper.title = 'Transcrever o áudio com o Whisper';
                     useWhisper.addEventListener('click', (event) => {
@@ -400,7 +405,11 @@ function renderWhisper() {
     const toggle = els.whisperToggle;
     toggle.replaceChildren();
     toggle.disabled = whisper.state !== 'missing';
-    if (whisper.state === 'ready') {
+    toggle.classList.toggle('is-off', whisper.state === 'unavailable');
+    if (whisper.state === 'unavailable') {
+        toggle.append(el('span', '', 'Indisponível'));
+        toggle.title = 'Nesta versão o Whisper só funciona se o faster-whisper já estiver instalado no Python deste computador';
+    } else if (whisper.state === 'ready') {
         toggle.append(el('span', 'dot'), el('span', '', 'Pronto'));
         toggle.title = whisper.backend === 'python'
             ? 'Usando o faster-whisper do Python deste computador'
@@ -584,4 +593,6 @@ api.on('focus', () => {
     whisper = await api.whisper.status();
     whisperOffer = whisper.state === 'missing' && !whisper.asked;
     renderWhisper();
+    // Os botões de cada linha dependem de o Whisper poder ser oferecido.
+    for (const row of rows.values()) upsertRow(row.job);
 })();

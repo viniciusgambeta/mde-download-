@@ -1,4 +1,6 @@
-// Preferências salvas em %APPDATA%/MeDaUmDownload/settings.json.
+// Preferências salvas em settings.json, na pasta de dados do app:
+// %APPDATA%/MeDaUmDownload no Windows e
+// ~/Library/Application Support/MeDaUmDownload no macOS.
 
 const { app } = require('electron');
 const fs = require('node:fs');
@@ -13,7 +15,7 @@ function defaults() {
     return {
         outDir: path.join(app.getPath('downloads'), 'Me dá um Download'),
         quality: '1080',
-        // Abre o Explorer com o arquivo selecionado quando um download termina.
+        // Abre o Explorer (ou o Finder) com o arquivo selecionado quando um download termina.
         openFolder: true,
         // Já avisamos uma vez que fechar a janela manda o app pra bandeja?
         trayHintShown: false,

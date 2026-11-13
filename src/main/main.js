@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, ipcMain, clipboard, shell, dialog, nativeTheme, nativeImage, Menu } = require('electron');
+const { app, BrowserWindow, Tray, ipcMain, clipboard, shell, dialog, nativeTheme, nativeImage, Menu, Notification } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 
@@ -8,6 +8,7 @@ const APP_ID = 'local.medaumdownload.app';
 app.setName(APP_NAME);
 // A pasta de dados usa um nome sem acentos de propósito: alguns programas
 // externos (como o Whisper) tropeçam em caminhos acentuados no Windows.
+// No macOS ela fica em ~/Library/Application Support/MeDaUmDownload.
 // Em desenvolvimento, MDD_USERDATA permite testar com dados isolados.
 app.setPath('userData', (!app.isPackaged && process.env.MDD_USERDATA)
     || path.join(app.getPath('appData'), 'MeDaUmDownload'));
@@ -32,9 +33,13 @@ const cobalt = require('./engines/cobalt');
 const instagram = require('./engines/instagram');
 const youtube = require('./engines/youtube');
 const whisper = require('./engines/whisper');
+const { isWin, isMac } = require('./platform');
 
 const ICON_PNG = path.join(__dirname, '..', 'renderer', 'assets', 'icon.png');
 const ICON_ICO = path.join(__dirname, '..', 'renderer', 'assets', 'icon.ico');
+// Ícone pequeno da barra de menus do macOS (18 pontos; a versão "@2x", pras
+// telas Retina, é carregada sozinha pelo Electron).
+const ICON_TRAY_MAC = path.join(__dirname, '..', 'renderer', 'assets', 'tray-mac.png');
 
 let win = null;
 let tray = null;
@@ -53,10 +58,15 @@ function createWindow() {
         minHeight: 480,
         show: false,
         title: APP_NAME,
-        icon: ICON_ICO,
+        icon: isWin ? ICON_ICO : ICON_PNG,
         backgroundColor: colors.bg,
         titleBarStyle: 'hidden',
-        titleBarOverlay: { color: 'rgba(0,0,0,0)', symbolColor: colors.symbol, height: 44 },
+        // Windows: os botões da janela ficam à direita, desenhados por cima da
+        // interface. macOS: os três botões ficam à esquerda, numa posição fixa,
+        // e a interface reserva o espaço deles (ver ".is-mac .bar" no styles.css).
+        ...(isMac
+            ? { trafficLightPosition: { x: 16, y: 14 } }
+            : { titleBarOverlay: { color: 'rgba(0,0,0,0)', symbolColor: colors.symbol, height: 44 } }),
         webPreferences: {
             preload: path.join(__dirname, '..', 'preload.js'),
             contextIsolation: true,
@@ -76,21 +86,14 @@ function createWindow() {
     win.once('ready-to-show', () => win.show());
     win.on('focus', () => win.webContents.send('focus'));
 
-    // Fechar a janela não encerra o app: ele vai pra bandeja e os downloads
-    // continuam. Pra sair de verdade, use "Sair" no menu do ícone da bandeja.
+    // Fechar a janela não encerra o app: ele vai pra bandeja (no macOS, a
+    // barra de menus) e os downloads continuam. Pra sair de verdade, use
+    // "Sair" no menu do ícone da bandeja (ou Cmd+Q no macOS).
     win.on('close', (event) => {
         if (quitting) return;
         event.preventDefault();
         win.hide();
-        if (tray && !settings.load().trayHintShown) {
-            settings.save({ trayHintShown: true });
-            tray.displayBalloon({
-                iconType: 'custom',
-                icon: nativeImage.createFromPath(ICON_PNG),
-                title: APP_NAME,
-                content: 'Continuo aqui na bandeja. Os downloads seguem em segundo plano.',
-            });
-        }
+        showBackgroundHint();
     });
     win.on('closed', () => { win = null; });
 
@@ -105,6 +108,26 @@ function createWindow() {
             if (input.type === 'keyDown' && input.key === 'F12') win.webContents.toggleDevTools();
         });
         runDevShots();
+    }
+}
+
+// Avisa, uma única vez, que fechar a janela não encerra o app.
+function showBackgroundHint() {
+    if (!tray || settings.load().trayHintShown) return;
+    settings.save({ trayHintShown: true });
+    if (isWin) {
+        tray.displayBalloon({
+            iconType: 'custom',
+            icon: nativeImage.createFromPath(ICON_PNG),
+            title: APP_NAME,
+            content: 'Continuo aqui na bandeja. Os downloads seguem em segundo plano.',
+        });
+    } else if (Notification.isSupported()) {
+        // Os balões da bandeja só existem no Windows; aqui vai uma notificação.
+        new Notification({
+            title: APP_NAME,
+            body: 'Continuo aberto na barra de menus. Os downloads seguem em segundo plano.',
+        }).show();
     }
 }
 
@@ -123,6 +146,47 @@ function quit() {
     app.quit();
 }
 
+/* ---------- menu do app (macOS) ---------- */
+
+// No macOS é o menu do app que faz Cmd+C, Cmd+V, Cmd+W e Cmd+Q funcionarem;
+// sem ele os atalhos somem. No Windows o app segue sem barra de menus.
+function applicationMenu() {
+    if (!isMac) return null;
+    return Menu.buildFromTemplate([
+        {
+            label: APP_NAME,
+            submenu: [
+                { role: 'about', label: `Sobre o ${APP_NAME}` },
+                { type: 'separator' },
+                { role: 'hide', label: `Ocultar ${APP_NAME}` },
+                { role: 'hideOthers', label: 'Ocultar Outros' },
+                { role: 'unhide', label: 'Mostrar Todos' },
+                { type: 'separator' },
+                { role: 'quit', label: `Encerrar ${APP_NAME}` },
+            ],
+        },
+        {
+            label: 'Editar',
+            submenu: [
+                { role: 'undo', label: 'Desfazer' },
+                { role: 'redo', label: 'Refazer' },
+                { type: 'separator' },
+                { role: 'cut', label: 'Recortar' },
+                { role: 'copy', label: 'Copiar' },
+                { role: 'paste', label: 'Colar' },
+                { role: 'selectAll', label: 'Selecionar Tudo' },
+            ],
+        },
+        {
+            label: 'Janela',
+            submenu: [
+                { role: 'minimize', label: 'Minimizar' },
+                { role: 'close', label: 'Fechar' },
+            ],
+        },
+    ]);
+}
+
 /* ---------- bandeja ---------- */
 
 const isActive = (job) => job.status === 'running' || job.status === 'queued';
@@ -135,7 +199,7 @@ function jobLine(job, max) {
 }
 
 function createTray() {
-    tray = new Tray(ICON_ICO);
+    tray = new Tray(isMac ? ICON_TRAY_MAC : ICON_ICO);
     tray.on('click', showWindow);
     refreshTray();
 }
@@ -217,7 +281,8 @@ nativeTheme.on('updated', () => {
     if (!win) return;
     const colors = palette();
     win.setBackgroundColor(colors.bg);
-    win.setTitleBarOverlay({ color: 'rgba(0,0,0,0)', symbolColor: colors.symbol });
+    // No macOS os botões da janela são do sistema e trocam de cor sozinhos.
+    if (!isMac) win.setTitleBarOverlay({ color: 'rgba(0,0,0,0)', symbolColor: colors.symbol });
 });
 
 function registerIpc() {
@@ -309,7 +374,7 @@ if (!app.requestSingleInstanceLock()) {
 
     app.whenReady().then(() => {
         app.setAppUserModelId(APP_ID);
-        Menu.setApplicationMenu(null);
+        Menu.setApplicationMenu(applicationMenu());
         registerIpc();
         jobs.init((channel, payload) => {
             if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
@@ -317,6 +382,8 @@ if (!app.requestSingleInstanceLock()) {
         });
         createWindow();
         createTray();
+        // macOS: clicar no ícone do Dock traz de volta a janela escondida.
+        app.on('activate', () => showWindow());
 
         // Deixa os motores prontos em segundo plano.
         cobalt.start().catch(() => {});

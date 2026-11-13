@@ -4,6 +4,7 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const bins = require('../bins');
+const { spawnOptions, killTree, nodeRuntime } = require('../platform');
 
 // Preferimos H.264 + AAC em MP4 porque abre em qualquer editor e player.
 // Acima de 1080p o YouTube só oferece VP9/AV1, então em "max" vale a resolução.
@@ -17,7 +18,7 @@ const baseArgs = () => [
     '--ffmpeg-location', bins.ffmpegPath(),
     // O YouTube exige rodar JavaScript pra liberar os links; usamos o
     // próprio executável do app como runtime (modo Node do Electron).
-    '--no-js-runtimes', '--js-runtimes', `node:${process.execPath}`,
+    '--no-js-runtimes', '--js-runtimes', `node:${nodeRuntime()}`,
 ];
 
 const childEnv = () => ({ ...process.env, ELECTRON_RUN_AS_NODE: '1', PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' });
@@ -102,7 +103,7 @@ async function run(opts, ctx) {
     const exe = await bins.ensureYtDlp();
 
     return new Promise((resolve, reject) => {
-        const child = spawn(exe, buildArgs(opts), { windowsHide: true, env: childEnv() });
+        const child = spawn(exe, buildArgs(opts), spawnOptions({ env: childEnv() }));
 
         const files = [];
         let title = null;
@@ -117,7 +118,7 @@ async function run(opts, ctx) {
         let item = 1;
         let itemCount = 1;
 
-        const kill = () => spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true });
+        const kill = () => killTree(child);
         if (ctx.signal.aborted) kill();
         ctx.signal.addEventListener('abort', kill, { once: true });
 
@@ -196,11 +197,11 @@ async function info(url, signal) {
 
     return new Promise((resolve, reject) => {
         const child = spawn(exe, [...baseArgs(), '--skip-download', '--no-playlist', '-J', '--', url],
-            { windowsHide: true, env: childEnv() });
+            spawnOptions({ env: childEnv() }));
 
         let stdout = '';
         let stderr = '';
-        const kill = () => spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true });
+        const kill = () => killTree(child);
         if (signal.aborted) kill();
         signal.addEventListener('abort', kill, { once: true });
 

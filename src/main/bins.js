@@ -8,11 +8,16 @@ const { spawn } = require('node:child_process');
 const { pipeline } = require('node:stream/promises');
 const { Readable } = require('node:stream');
 
-const YTDLP_URL = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe';
+const { isWin, isMac } = require('./platform');
+
+// O yt-dlp publica um executável pronto pra cada sistema (o do macOS serve
+// tanto pra Apple Silicon quanto pra Intel).
+const YTDLP_NAME = isWin ? 'yt-dlp.exe' : isMac ? 'yt-dlp_macos' : 'yt-dlp_linux';
+const YTDLP_URL = `https://github.com/yt-dlp/yt-dlp/releases/latest/download/${YTDLP_NAME}`;
 const UPDATE_EVERY = 24 * 60 * 60 * 1000;
 
 const binDir = () => path.join(app.getPath('userData'), 'bin');
-const ytDlpPath = () => path.join(binDir(), 'yt-dlp.exe');
+const ytDlpPath = () => path.join(binDir(), YTDLP_NAME);
 
 // No app instalado o Cobalt fica em resources/cobalt; em desenvolvimento, em vendor/cobalt.
 const cobaltDir = () => (app.isPackaged
@@ -20,7 +25,7 @@ const cobaltDir = () => (app.isPackaged
     : path.join(app.getAppPath(), 'vendor', 'cobalt'));
 
 // O ffmpeg vem junto com o Cobalt (pacote ffmpeg-static).
-const ffmpegPath = () => path.join(cobaltDir(), 'node_modules', 'ffmpeg-static', 'ffmpeg.exe');
+const ffmpegPath = () => path.join(cobaltDir(), 'node_modules', 'ffmpeg-static', isWin ? 'ffmpeg.exe' : 'ffmpeg');
 
 let ensuring = null;
 
@@ -34,6 +39,8 @@ function ensureYtDlp() {
             const res = await net.fetch(YTDLP_URL);
             if (!res.ok) throw new Error(`Não consegui baixar o yt-dlp (HTTP ${res.status}).`);
             await pipeline(Readable.fromWeb(res.body), fs.createWriteStream(tmp));
+            // Fora do Windows um arquivo baixado não nasce "executável".
+            if (!isWin) fs.chmodSync(tmp, 0o755);
             fs.renameSync(tmp, ytDlpPath());
             return ytDlpPath();
         })().finally(() => { ensuring = null; });

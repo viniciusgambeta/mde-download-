@@ -260,7 +260,7 @@ async function runJob(job) {
         job.thumb = await makeThumb(job.files.find((f) => /\.(jpe?g|png|webp|mp4|mov|mkv|webm)$/i.test(f)) || job.files[0]);
         Object.assign(job, { status: 'done', progress: 1, detail: '' });
         saveHistory();
-        // Abre o Explorer já com o arquivo selecionado (dá pra desligar nos ajustes).
+        // Abre o Explorer (ou o Finder) já com o arquivo selecionado (dá pra desligar nos ajustes).
         if (settings.load().openFolder) shell.showItemInFolder(job.files[0]);
     } catch (err) {
         if (signal.aborted) {

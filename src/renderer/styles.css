@@ -93,6 +93,14 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--line-stron
 
 .bar-actions { display: flex; gap: 2px; -webkit-app-region: no-drag; }
 
+/* macOS: os botões da janela (fechar, minimizar, ampliar) ficam à esquerda,
+   por cima da barra, então o nome do app começa depois deles. A posição dos
+   botões é fixada em main.js (trafficLightPosition). */
+.is-mac .bar {
+    width: 100%;
+    padding: 0 10px 0 84px;
+}
+
 .icon-btn {
     width: 30px;
     height: 30px;
@@ -533,6 +541,7 @@ main.is-empty .downloads { display: none; }
 }
 .chip-btn:hover { background: var(--surface-2); }
 .chip-btn:disabled { cursor: default; background: none; }
+.chip-btn.is-off { color: var(--muted); font-weight: 500; }
 .chip-btn .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
 .chip-btn .when-hover { display: none; }
 .chip-btn.is-on:hover .when-hover { display: inline; }

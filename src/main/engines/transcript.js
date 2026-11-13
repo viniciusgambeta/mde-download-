@@ -6,8 +6,7 @@
 const { net, session, BrowserWindow } = require('electron');
 const ytdlp = require('./ytdlp');
 const subtitles = require('./subtitles');
-
-const UA = () => `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome.split('.')[0]}.0.0.0 Safari/537.36`;
+const { browserUserAgent: UA } = require('../platform');
 
 const noSubs = () => Object.assign(new Error('Esse vídeo não tem legenda pronta.'), { code: 'no-subs' });
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

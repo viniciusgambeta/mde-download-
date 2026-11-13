@@ -6,6 +6,7 @@
 
 const { BrowserWindow, session } = require('electron');
 const direct = require('./direct');
+const { browserUserAgent } = require('../platform');
 
 const PARTITION = 'persist:instagram';
 const APP_ID = '936619743392459';
@@ -17,8 +18,7 @@ let configured = false;
 function ses() {
     const s = session.fromPartition(PARTITION);
     if (!configured) {
-        const major = process.versions.chrome.split('.')[0];
-        s.setUserAgent(`Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`);
+        s.setUserAgent(browserUserAgent());
         configured = true;
     }
     return s;

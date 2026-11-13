@@ -5,7 +5,8 @@
 //   1. "python": o faster-whisper já instalado no Python da máquina (usa a
 //      placa de vídeo quando dá). Nada é baixado pelo app.
 //   2. "cpp": o whisper.cpp, um programa independente que o app baixa (com o
-//      modelo) quando a pessoa aceita. Não precisa de Python.
+//      modelo) quando a pessoa aceita. Não precisa de Python. Por enquanto só
+//      existe no Windows: no macOS vale apenas o primeiro jeito.
 
 const { app } = require('electron');
 const { spawn } = require('node:child_process');
@@ -14,6 +15,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const bins = require('../bins');
+const { isWin, isMac, spawnOptions, killTree } = require('../platform');
 const ytdlp = require('./ytdlp');
 const cobalt = require('./cobalt');
 const direct = require('./direct');
@@ -28,6 +30,11 @@ const CPP_MODEL_URL = `https://huggingface.co/ggerganov/whisper.cpp/resolve/main
 const CPP_MODEL_BYTES = 574041195;
 const INSTALL_BYTES = CPP_ZIP_BYTES + CPP_MODEL_BYTES;
 
+// O pacote do whisper.cpp que o app sabe baixar é o oficial pra Windows. Nos
+// outros sistemas o download não é oferecido. (MDD_NO_CPP, só em
+// desenvolvimento, simula essa situação no Windows.)
+const CPP_SUPPORTED = isWin && !(!app.isPackaged && process.env.MDD_NO_CPP);
+
 const home = () => path.join(app.getPath('userData'), 'whisper');
 const modelPath = () => path.join(home(), 'models', CPP_MODEL);
 
@@ -41,7 +48,7 @@ function runProcess(exe, args, { cwd, env, signal, onLine } = {}) {
         if (signal && signal.aborted) return reject(canceled());
         let child;
         try {
-            child = spawn(exe, args, { cwd, env, windowsHide: true });
+            child = spawn(exe, args, spawnOptions({ cwd, env }));
         } catch (err) {
             return reject(err);
         }
@@ -58,7 +65,7 @@ function runProcess(exe, args, { cwd, env, signal, onLine } = {}) {
             lines.forEach(onLine);
         };
 
-        const kill = () => spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true });
+        const kill = () => killTree(child);
         if (signal) signal.addEventListener('abort', kill, { once: true });
 
         child.stdout.setEncoding('utf8');
@@ -111,6 +118,20 @@ function pythonModelCached() {
     });
 }
 
+// Onde procurar o Python em cada sistema.
+function pythonCandidates() {
+    if (isWin) return [['python'], ['py', '-3']];
+    if (!isMac) return [['python3'], ['python']];
+    // Um app aberto pelo Finder não herda o PATH do Terminal, então olhamos
+    // direto onde o Homebrew e o instalador do python.org deixam o Python.
+    const found = ['/opt/homebrew/bin/python3', '/usr/local/bin/python3'].filter((file) => fs.existsSync(file));
+    // O /usr/bin/python3 do macOS só funciona com as ferramentas de linha de
+    // comando da Apple instaladas; sem elas, chamá-lo abre um aviso pedindo
+    // pra instalar, então nesse caso nem tentamos.
+    if (fs.existsSync('/Library/Developer/CommandLineTools/usr/bin/python3')) found.push('/usr/bin/python3');
+    return found.map((file) => [file]);
+}
+
 // Procura um Python que tenha o faster-whisper. Só consulta se o pacote
 // existe (não o carrega), então é rápido mesmo a cada abertura do app.
 async function findPython() {
@@ -120,7 +141,7 @@ async function findPython() {
     if (!app.isPackaged && process.env.MDD_NO_PYTHON) return null;
     if (!pythonModelCached()) return null;
 
-    for (const candidate of [['python'], ['py', '-3']]) {
+    for (const candidate of pythonCandidates()) {
         const [exe, ...args] = candidate;
         try {
             const timeout = AbortSignal.timeout(20000);
@@ -213,7 +234,7 @@ function modelReady() {
     }
 }
 
-const cppInstalled = () => Boolean(findCli()) && modelReady();
+const cppInstalled = () => CPP_SUPPORTED && Boolean(findCli()) && modelReady();
 
 async function extractZip(zip, dest, signal) {
     fs.mkdirSync(dest, { recursive: true });
@@ -240,6 +261,7 @@ let installState = { progress: 0, detail: '' };
 
 // Baixa o whisper.cpp e o modelo. onProgress recebe { progress: 0..1, detail }.
 function install(onProgress) {
+    if (!CPP_SUPPORTED) return Promise.reject(new Error('O download do Whisper ainda não está disponível neste sistema.'));
     if (installing) return installing;
     installAbort = new AbortController();
     const { signal } = installAbort;
@@ -346,6 +368,8 @@ async function status() {
     if (installing) return { state: 'installing', ...installState };
     if (await findPython()) return { state: 'ready', backend: 'python' };
     if (cppInstalled()) return { state: 'ready', backend: 'cpp' };
+    // Sem faster-whisper e sem download possível: a interface não oferece nada.
+    if (!CPP_SUPPORTED) return { state: 'unavailable' };
     return { state: 'missing', sizeMB: Math.round(INSTALL_BYTES / 1048576) };
 }
 
@@ -375,7 +399,9 @@ async function transcribe({ url, id, platform, dir }, ctx) {
     ctx.progress(null, 'Preparando Whisper');
     const command = await findPython();
     if (!command && !cppInstalled()) {
-        throw Object.assign(new Error('O Whisper não está instalado neste computador.'), { code: 'no-whisper' });
+        throw Object.assign(new Error(CPP_SUPPORTED
+            ? 'O Whisper não está instalado neste computador.'
+            : `Sem legenda pronta, e o Whisper ainda não funciona ${isMac ? 'no Mac' : 'neste sistema'}.`), { code: 'no-whisper' });
     }
 
     const workRoot = path.join(home(), 'work');

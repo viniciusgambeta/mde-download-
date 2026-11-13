@@ -65,16 +65,15 @@ para logo no começo e diz quais estão faltando.
 
 ## 3. Ícone
 
-O Mac pede um ícone de 1024×1024. O arquivo
-[build/icon-mac.png](../build/icon-mac.png) é provisório: foi ampliado do
-original de 200×200 e fica borrado em tamanhos grandes. Para trocar, salve a
-versão nova por cima dele, em PNG de 1024×1024. O desenho deve ocupar um
-quadrado de cerca de 824×824 no centro, com o resto transparente, que é a
-proporção dos ícones do macOS.
+O ícone do app no Mac é o [build/icon-mac.png](../build/icon-mac.png), um PNG
+de 1024×1024. Para trocar, salve a versão nova por cima dele, no mesmo
+tamanho. O desenho deve ocupar um quadrado de cerca de 824×824 no centro, com
+o resto transparente, que é a proporção dos ícones do macOS.
 
 O ícone da barra de menus
 ([tray-mac.png](../src/renderer/assets/tray-mac.png) e a versão `@2x`) é o
-mesmo ícone reduzido.
+mesmo ícone reduzido para 18 e 36 pixels, sem a margem transparente. Se o
+ícone do app mudar, ele precisa ser gerado de novo.
 
 ## 4. Se a execução falhar
 

@@ -14,15 +14,24 @@ const os = require('node:os');
 const path = require('node:path');
 
 const bins = require('../bins');
+const { OWN_GROUP, killTree } = require('../proc');
 const ytdlp = require('./ytdlp');
 const cobalt = require('./cobalt');
 const direct = require('./direct');
 const subtitles = require('./subtitles');
 
+const IS_WIN = process.platform === 'win32';
+
 // Versão fixa do whisper.cpp (binários oficiais do GitHub) e modelo "turbo"
 // compactado: boa precisão em português e rápido o bastante no processador.
-const CPP_ZIP_URL = 'https://github.com/ggml-org/whisper.cpp/releases/download/b5454/whisper-bin-x64.zip';
-const CPP_ZIP_BYTES = 9 * 1048576;
+// No Linux o pacote oficial é o compilado pro Ubuntu, que só depende da
+// biblioteca padrão do C++ e roda nas outras distribuições também.
+const CPP_PACKAGE = IS_WIN
+    ? { file: 'whisper-bin-x64.zip', bytes: 9 * 1048576 }
+    : { file: `whisper-bin-ubuntu-${process.arch === 'arm64' ? 'arm64' : 'x64'}.tar.gz`, bytes: 10 * 1048576 };
+const CPP_ZIP_URL = `https://github.com/ggml-org/whisper.cpp/releases/download/b5454/${CPP_PACKAGE.file}`;
+const CPP_ZIP_BYTES = CPP_PACKAGE.bytes;
+const CPP_CLI = IS_WIN ? 'whisper-cli.exe' : 'whisper-cli';
 const CPP_MODEL = 'ggml-large-v3-turbo-q5_0.bin';
 const CPP_MODEL_URL = `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${CPP_MODEL}`;
 const CPP_MODEL_BYTES = 574041195;
@@ -41,7 +50,7 @@ function runProcess(exe, args, { cwd, env, signal, onLine } = {}) {
         if (signal && signal.aborted) return reject(canceled());
         let child;
         try {
-            child = spawn(exe, args, { cwd, env, windowsHide: true });
+            child = spawn(exe, args, { cwd, env, windowsHide: true, detached: OWN_GROUP });
         } catch (err) {
             return reject(err);
         }
@@ -58,7 +67,7 @@ function runProcess(exe, args, { cwd, env, signal, onLine } = {}) {
             lines.forEach(onLine);
         };
 
-        const kill = () => spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true });
+        const kill = () => killTree(child);
         if (signal) signal.addEventListener('abort', kill, { once: true });
 
         child.stdout.setEncoding('utf8');
@@ -120,7 +129,10 @@ async function findPython() {
     if (!app.isPackaged && process.env.MDD_NO_PYTHON) return null;
     if (!pythonModelCached()) return null;
 
-    for (const candidate of [['python'], ['py', '-3']]) {
+    // No Windows não tentamos "python3": sem o Python instalado, esse nome
+    // abre a Microsoft Store.
+    const candidates = IS_WIN ? [['python'], ['py', '-3']] : [['python3'], ['python']];
+    for (const candidate of candidates) {
         const [exe, ...args] = candidate;
         try {
             const timeout = AbortSignal.timeout(20000);
@@ -190,7 +202,7 @@ function findCli() {
     const walk = (dir, depth) => {
         let entries = [];
         try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return null; }
-        const hit = entries.find((e) => e.isFile() && e.name.toLowerCase() === 'whisper-cli.exe');
+        const hit = entries.find((e) => e.isFile() && e.name.toLowerCase() === CPP_CLI);
         if (hit) return path.join(dir, hit.name);
         if (depth >= 3) return null;
         for (const entry of entries) {
@@ -215,12 +227,18 @@ function modelReady() {
 
 const cppInstalled = () => Boolean(findCli()) && modelReady();
 
-async function extractZip(zip, dest, signal) {
+async function extractPackage(archive, dest, signal) {
     fs.mkdirSync(dest, { recursive: true });
+    // No Linux o pacote é um .tar.gz, e o tar já vem com o sistema.
+    if (!IS_WIN) {
+        const { code, tail } = await runProcess('tar', ['-xzf', archive, '-C', dest], { signal });
+        if (code !== 0) throw new Error(`Não consegui descompactar o Whisper. ${tail.slice(-200)}`);
+        return;
+    }
     // O Windows 10 e 11 já vêm com o tar, que abre arquivos .zip.
     const tar = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
     try {
-        const { code } = await runProcess(tar, ['-xf', zip, '-C', dest], { signal });
+        const { code } = await runProcess(tar, ['-xf', archive, '-C', dest], { signal });
         if (code === 0) return;
     } catch (err) {
         if (err.canceled) throw err;
@@ -229,7 +247,7 @@ async function extractZip(zip, dest, signal) {
     // aspas internas dobradas) pra não serem interpretados como código.
     const quote = (text) => `'${String(text).replace(/'/g, "''")}'`;
     const { code, tail } = await runProcess('powershell.exe',
-        ['-NoProfile', '-NonInteractive', '-Command', `Expand-Archive -LiteralPath ${quote(zip)} -DestinationPath ${quote(dest)} -Force`],
+        ['-NoProfile', '-NonInteractive', '-Command', `Expand-Archive -LiteralPath ${quote(archive)} -DestinationPath ${quote(dest)} -Force`],
         { signal });
     if (code !== 0) throw new Error(`Não consegui descompactar o Whisper. ${tail.slice(-200)}`);
 }
@@ -257,12 +275,12 @@ function install(onProgress) {
             fs.rmSync(path.join(home(), 'bin'), { recursive: true, force: true });
             const zip = await direct.download(CPP_ZIP_URL, {
                 dir: home(),
-                name: 'whisper-bin-x64.zip',
+                name: CPP_PACKAGE.file,
                 signal,
                 onProgress: (_fraction, received) => report(Math.min(received, CPP_ZIP_BYTES), 'Baixando o programa'),
             });
             try {
-                await extractZip(zip, path.join(home(), 'bin'), signal);
+                await extractPackage(zip, path.join(home(), 'bin'), signal);
             } finally {
                 fs.rm(zip, { force: true }, () => {});
             }

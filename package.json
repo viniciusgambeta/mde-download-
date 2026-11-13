@@ -12,10 +12,12 @@
   "homepage": "https://github.com/viniciusgambeta/mde-download-",
   "private": true,
   "main": "src/main/main.js",
+  "desktopName": "medaumdownload.desktop",
   "scripts": {
     "start": "electron .",
     "setup": "node scripts/setup-cobalt.mjs",
-    "dist": "electron-builder --win nsis"
+    "dist": "electron-builder --win nsis",
+    "dist:linux": "electron-builder --linux AppImage"
   },
   "devDependencies": {
     "electron": "^45.3.1",
@@ -37,6 +39,14 @@
       "icon": "build/icon.ico",
       "executableName": "MeDaUmDownload",
       "signAndEditExecutable": true
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "src/renderer/assets/icon.png",
+      "executableName": "medaumdownload",
+      "syncDesktopName": true,
+      "category": "Network",
+      "artifactName": "MeDaUmDownload-${version}-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": true,

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, ipcMain, clipboard, shell, dialog, nativeTheme, nativeImage, Menu } = require('electron');
+const { app, BrowserWindow, Tray, Notification, ipcMain, clipboard, shell, dialog, nativeTheme, nativeImage, Menu } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 
@@ -39,6 +39,9 @@ const whisper = require('./engines/whisper');
 
 const ICON_PNG = path.join(__dirname, '..', 'renderer', 'assets', 'icon.png');
 const ICON_ICO = path.join(__dirname, '..', 'renderer', 'assets', 'icon.ico');
+// Só o Windows lê .ico; no Linux a janela e a bandeja usam o PNG.
+const IS_WIN = process.platform === 'win32';
+const ICON = IS_WIN ? ICON_ICO : ICON_PNG;
 
 let win = null;
 let tray = null;
@@ -57,7 +60,7 @@ function createWindow() {
         minHeight: 480,
         show: false,
         title: APP_NAME,
-        icon: ICON_ICO,
+        icon: ICON,
         backgroundColor: colors.bg,
         titleBarStyle: 'hidden',
         titleBarOverlay: { color: 'rgba(0,0,0,0)', symbolColor: colors.symbol, height: 44 },
@@ -88,12 +91,18 @@ function createWindow() {
         win.hide();
         if (tray && !settings.load().trayHintShown) {
             settings.save({ trayHintShown: true });
-            tray.displayBalloon({
-                iconType: 'custom',
-                icon: nativeImage.createFromPath(ICON_PNG),
-                title: APP_NAME,
-                content: 'Continuo aqui na bandeja. Os downloads seguem em segundo plano.',
-            });
+            const hint = 'Continuo aqui na bandeja. Os downloads seguem em segundo plano.';
+            // O balão da bandeja só existe no Windows; no Linux vira notificação.
+            if (IS_WIN) {
+                tray.displayBalloon({
+                    iconType: 'custom',
+                    icon: nativeImage.createFromPath(ICON_PNG),
+                    title: APP_NAME,
+                    content: hint,
+                });
+            } else if (Notification.isSupported()) {
+                new Notification({ title: APP_NAME, body: hint, icon: ICON_PNG }).show();
+            }
         }
     });
     win.on('closed', () => { win = null; });
@@ -139,7 +148,7 @@ function jobLine(job, max) {
 }
 
 function createTray() {
-    tray = new Tray(ICON_ICO);
+    tray = new Tray(ICON);
     tray.on('click', showWindow);
     refreshTray();
 }

@@ -1,8 +1,8 @@
 # Me dá um Download
 
-Cola o link, baixa. Um app para Windows que baixa vídeos, áudio, fotos e
-transcrições do YouTube, Instagram, TikTok, X e de mais de mil outros sites,
-com uma tela só: um campo para o link.
+Cola o link, baixa. Um app para Windows e Linux que baixa vídeos, áudio,
+fotos e transcrições do YouTube, Instagram, TikTok, X e de mais de mil outros
+sites, com uma tela só: um campo para o link.
 
 **Site:** [downloader.medaumexemplo.com](https://downloader.medaumexemplo.com)
 
@@ -33,8 +33,15 @@ O instalador não é assinado digitalmente, então o Windows mostra um aviso do
 SmartScreen. Clique em **Mais informações** e depois em **Executar assim
 mesmo**.
 
-Na primeira abertura o app baixa o yt-dlp (cerca de 23 MB), então é preciso
-estar conectado à internet.
+No Linux, baixe o arquivo `.AppImage`, dê permissão de execução e abra:
+
+```bash
+chmod +x MeDaUmDownload-*.AppImage
+./MeDaUmDownload-*.AppImage
+```
+
+Na primeira abertura o app baixa o yt-dlp (cerca de 23 MB no Windows e 40 MB
+no Linux), então é preciso estar conectado à internet.
 
 ## Como usar
 
@@ -96,10 +103,14 @@ usar uma conta secundária.
 - Sem login, o Instagram às vezes não libera fotos avulsas.
 - Os destaques do Instagram e a instalação do Whisper pelo app (whisper.cpp)
   foram escritos mas ainda não passaram por teste completo. Se algo falhar, o
-  motivo fica registrado em `%APPDATA%\MeDaUmDownload\falhas.log`.
+  motivo fica registrado em `%APPDATA%\MeDaUmDownload\falhas.log` (no Linux,
+  em `~/.config/MeDaUmDownload/falhas.log`).
 - A foto de perfil do Instagram vem no tamanho original que a conta enviou
   (até 1080×1080; contas antigas podem ter só 320×320).
-- Só há versão para Windows 10 e 11 de 64 bits.
+- Há versão para Windows 10 e 11 de 64 bits e para Linux de 64 bits.
+- No Linux, o ícone da bandeja depende do ambiente gráfico (no GNOME, precisa
+  da extensão AppIndicator). Sem ele, fechar a janela esconde o app; abrir o
+  app de novo traz a janela de volta.
 
 ## Como funciona
 
@@ -117,7 +128,8 @@ um falha:
 
 ## Rodar a partir do código
 
-Requisitos: Windows, [Node.js](https://nodejs.org/) 22.12 ou mais novo e git.
+Requisitos: Windows ou Linux, [Node.js](https://nodejs.org/) 22.12 ou mais
+novo e git.
 
 ```bash
 npm install
@@ -140,6 +152,10 @@ Para gerar o instalador em `dist/`:
 ```bash
 npm run dist
 ```
+
+No Linux, `npm run dist:linux` gera um `.AppImage`. Cada sistema precisa ser
+empacotado nele mesmo, porque o ffmpeg que vai junto é o que o
+`npm run setup` baixou para a máquina.
 
 ## Uso responsável
 

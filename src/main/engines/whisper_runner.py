@@ -35,7 +35,10 @@ def emit(**event):
 def add_cuda_dlls():
     """O faster-whisper precisa das DLLs de CUDA (cuBLAS/cuDNN). No Windows elas
     costumam vir dentro do PyTorch ou dos pacotes nvidia-*; aqui avisamos ao
-    sistema onde procurar, senão a GPU não é usada."""
+    sistema onde procurar, senão a GPU não é usada. Fora do Windows quem acha
+    as bibliotecas é o próprio sistema (e os.add_dll_directory nem existe)."""
+    if os.name != "nt":
+        return
     folders = []
     spec = importlib.util.find_spec("torch")
     if spec and spec.origin:

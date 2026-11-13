@@ -1,0 +1,208 @@
+name: Teste de abertura no macOS
+
+# Baixa o instalador de Mac publicado numa release, instala do jeito que uma
+# pessoa faria (abre o .dmg e copia o app para Aplicativos) e abre o app de
+# verdade, em mais de uma versão do macOS e nos dois processadores. Se o app
+# fechar sozinho, o relatório do crash aparece no topo da página da execução,
+# em "Annotations".
+on:
+  push:
+    branches: [mac]
+    paths: ['.github/workflows/teste-mac.yml']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag da release a testar
+        default: v1.0.1-mac
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
+
+jobs:
+  abrir:
+    name: Abrir no ${{ matrix.sistema }} (${{ matrix.arquivo }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sistema: macos-26
+            arquivo: arm64
+          - sistema: macos-15
+            arquivo: arm64
+          - sistema: macos-14
+            arquivo: arm64
+          - sistema: macos-15-intel
+            arquivo: x64
+    runs-on: ${{ matrix.sistema }}
+    timeout-minutes: 15
+    env:
+      TAG: ${{ inputs.tag || 'v1.0.1-mac' }}
+      ARQUIVO: ${{ matrix.arquivo }}
+    steps:
+      - name: Baixar e instalar o app
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          exec > >(tee "$RUNNER_TEMP/teste-1-instalar.log") 2>&1
+          sw_vers
+          echo "Processador: $(uname -m) · $(sysctl -n machdep.cpu.brand_string)"
+
+          mkdir -p "$RUNNER_TEMP/baixado"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "*-mac-$ARQUIVO.dmg" --dir "$RUNNER_TEMP/baixado"
+          dmg=("$RUNNER_TEMP"/baixado/*.dmg)
+          echo "Instalador: $(basename "${dmg[0]}") ($(stat -f %z "${dmg[0]}") bytes)"
+
+          hdiutil attach -nobrowse -readonly -mountpoint "$RUNNER_TEMP/volume" "${dmg[0]}" > /dev/null
+          origem=("$RUNNER_TEMP"/volume/*.app)
+          app="/Applications/$(basename "${origem[0]}")"
+          ditto "${origem[0]}" "$app"
+          echo "APP=$app" >> "$GITHUB_ENV"
+
+          echo "== Info.plist"
+          plutil -p "$app/Contents/Info.plist" | grep -E 'CFBundle(Name|DisplayName|Executable|Identifier|ShortVersionString)|LSMinimumSystemVersion|LSUIElement|ElectronAsarIntegrity' || true
+          echo "== Contents/MacOS"
+          ls -la "$app/Contents/MacOS"
+          echo "== Contents/Frameworks"
+          ls "$app/Contents/Frameworks"
+          echo "== Assinatura"
+          codesign --verify --deep --strict "$app" && echo "assinatura: ok"
+          spctl --assess --type execute -vv "$app" || true
+          echo "== Permissões especiais do app"
+          codesign --display --entitlements - "$app" 2> /dev/null | tr -d '\0' | grep -o 'com\.apple\.security[a-z.-]*' | sort -u || true
+
+      # Abre pelo comando "open", que é o mesmo caminho de um clique duplo no
+      # Finder, e acompanha o app por 40 segundos.
+      - name: Abrir como um clique duplo
+        run: |
+          exec > >(tee "$RUNNER_TEMP/teste-2-abrir.log") 2>&1
+          date +%s > "$RUNNER_TEMP/inicio"
+          open -n --stdout "$RUNNER_TEMP/app-open.out" --stderr "$RUNNER_TEMP/app-open.err" \
+            --env ELECTRON_ENABLE_LOGGING=1 --env ELECTRON_ENABLE_STACK_DUMPING=1 "$APP"
+          vivo=0
+          for segundo in $(seq 1 40); do
+            sleep 1
+            if pgrep -f 'Download\.app/Contents/MacOS/' > /dev/null; then vivo=$segundo; fi
+          done
+          echo "Último segundo em que o app estava aberto: $vivo de 40"
+          echo "== Processos do app"
+          ps -axo pid,ppid,etime,command | grep -F 'Download' | grep -v grep | cut -c 1-220 || true
+          echo "== Janelas na tela"
+          cat > "$RUNNER_TEMP/janelas.swift" <<'SWIFT'
+          import CoreGraphics
+          import Foundation
+          let janelas = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
+          for janela in janelas {
+              let dono = janela["kCGWindowOwnerName"] as? String ?? ""
+              if dono.contains("Download") {
+                  print(dono, "camada", janela["kCGWindowLayer"] ?? "?", "na tela", janela["kCGWindowIsOnscreen"] ?? 0, janela["kCGWindowBounds"] ?? "")
+              }
+          }
+          SWIFT
+          swift "$RUNNER_TEMP/janelas.swift" 2>&1 | head -20 || true
+          echo "== Saída do app"
+          tail -n 40 "$RUNNER_TEMP/app-open.out" "$RUNNER_TEMP/app-open.err" 2> /dev/null || true
+          pkill -f 'Download\.app/Contents/' || true
+          sleep 3
+          if [ "$vivo" -lt 40 ]; then
+            echo "::error title=O app fechou sozinho [macOS $(sw_vers -productVersion) $ARQUIVO]::Aberto pelo comando open, o app só ficou de pé até o segundo $vivo de 40."
+            exit 1
+          fi
+
+      # Roda o executável direto, o que garante que tudo o que o app escrever
+      # antes de cair fique registrado.
+      - name: Abrir direto pelo executável
+        if: always()
+        run: |
+          exec > >(tee "$RUNNER_TEMP/teste-3-direto.log") 2>&1
+          [ -f "$RUNNER_TEMP/inicio" ] || date +%s > "$RUNNER_TEMP/inicio"
+          executavel=("$APP"/Contents/MacOS/*)
+          ELECTRON_ENABLE_LOGGING=1 ELECTRON_ENABLE_STACK_DUMPING=1 "${executavel[0]}" > "$RUNNER_TEMP/app-direto.log" 2>&1 &
+          pid=$!
+          vivo=0
+          for segundo in $(seq 1 30); do
+            sleep 1
+            if kill -0 "$pid" 2> /dev/null; then vivo=$segundo; else break; fi
+          done
+          echo "Último segundo em que o app estava aberto: $vivo de 30"
+          if [ "$vivo" -lt 30 ]; then
+            codigo=0
+            wait "$pid" || codigo=$?
+            echo "Código de saída: $codigo"
+          fi
+          echo "== Saída do app"
+          tail -n 60 "$RUNNER_TEMP/app-direto.log" || true
+          pkill -f 'Download\.app/Contents/' || true
+          if [ "$vivo" -lt 30 ]; then
+            echo "::error title=O app fechou sozinho [macOS $(sw_vers -productVersion) $ARQUIVO]::Aberto direto pelo executável, o app só ficou de pé até o segundo $vivo de 30."
+            exit 1
+          fi
+
+      # Os relatórios de crash que o macOS gravou durante o teste e o registro
+      # de cada passo viram anotações, que dá para ler sem entrar no GitHub.
+      - name: Resumir o teste
+        if: always()
+        run: |
+          sleep 15
+          log show --last 4m --style compact --predicate 'process CONTAINS "Download" OR eventMessage CONTAINS "medaumexemplo"' 2> /dev/null \
+            | grep -iE 'crash|kill|signal|invalid|denied|fatal|abort|exception|terminat|quarantine|translocat' | tail -n 40 > "$RUNNER_TEMP/teste-4-sistema.log" || true
+          node -e '
+            const fs = require("fs");
+            const path = require("path");
+            const dir = process.argv[1];
+            const rotulo = process.argv[2];
+            const desde = Number(fs.existsSync(path.join(dir, "inicio")) ? fs.readFileSync(path.join(dir, "inicio"), "utf8") : 0) * 1000;
+            const anotar = (nivel, titulo, texto) => {
+              if (!texto.trim()) return;
+              const codificado = texto.slice(0, 6000).replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+              console.log("::" + nivel + " title=" + titulo + " [" + rotulo + "]::" + codificado);
+            };
+
+            const pastas = [path.join(process.env.HOME, "Library/Logs/DiagnosticReports"), "/Library/Logs/DiagnosticReports"];
+            let crashes = 0;
+            for (const pasta of pastas) {
+              let nomes = [];
+              try { nomes = fs.readdirSync(pasta); } catch { continue; }
+              for (const nome of nomes) {
+                const arquivo = path.join(pasta, nome);
+                if (!/\.(ips|crash)$/.test(nome) || fs.statSync(arquivo).mtimeMs < desde) continue;
+                const texto = fs.readFileSync(arquivo, "utf8");
+                const linhas = [nome];
+                try {
+                  const corte = texto.indexOf("\n");
+                  const topo = JSON.parse(texto.slice(0, corte));
+                  const corpo = JSON.parse(texto.slice(corte + 1));
+                  linhas.push("app: " + topo.app_name + " " + (topo.app_version || "") + " (" + (topo.bundleID || "") + ")");
+                  linhas.push("processo: " + corpo.procPath);
+                  linhas.push("pai: " + corpo.parentProc + " · cpu: " + corpo.cpuType + " · traduzido: " + corpo.translated);
+                  linhas.push("sistema: " + JSON.stringify(corpo.osVersion));
+                  linhas.push("excecao: " + JSON.stringify(corpo.exception));
+                  linhas.push("termino: " + JSON.stringify(corpo.termination));
+                  if (corpo.asi) linhas.push("asi: " + JSON.stringify(corpo.asi));
+                  if (corpo.vmRegionInfo) linhas.push("regiao: " + String(corpo.vmRegionInfo).slice(0, 300));
+                  const fios = corpo.threads || [];
+                  const fio = fios.find((f) => f.triggered) || fios[corpo.faultingThread] || fios[0];
+                  if (fio) {
+                    linhas.push("fio que caiu: " + (fio.name || fio.queue || fio.id));
+                    for (const quadro of (fio.frames || []).slice(0, 28)) {
+                      const imagem = (corpo.usedImages || [])[quadro.imageIndex] || {};
+                      linhas.push("  " + (imagem.name || "?") + " " + (quadro.symbol || "") + " +" + (quadro.symbolLocation ?? quadro.imageOffset));
+                    }
+                  }
+                } catch (erro) {
+                  linhas.push("(não deu para ler como JSON: " + erro.message + ")", texto.slice(0, 3000));
+                }
+                crashes += 1;
+                anotar("error", "Relatório de crash", linhas.join("\n"));
+              }
+            }
+            if (!crashes) console.log("Nenhum relatório de crash gravado durante o teste.");
+
+            for (const nome of fs.readdirSync(dir).filter((n) => /^teste-.*\.log$/.test(n)).sort()) {
+              const texto = fs.readFileSync(path.join(dir, nome), "utf8").replace(/\x1b\[[0-9;]*m/g, "").split(/\r?\n/).filter((l) => l.trim()).join("\n");
+              anotar("notice", nome, texto);
+            }
+          ' "$RUNNER_TEMP" "${{ matrix.sistema }} $ARQUIVO"

@@ -13,8 +13,9 @@ on:
     # Enquanto a versão de Mac está em teste, cada push na branch "mac" gera
     # um instalador. Depois de juntar na main, esta linha pode sair.
     branches: ['mac']
-    # Mudança só em texto (guias, README) não precisa de um instalador novo.
-    paths-ignore: ['**.md']
+    # Mudança só em texto (guias, README) ou no teste de abertura não precisa
+    # de um instalador novo.
+    paths-ignore: ['**.md', '.github/workflows/teste-mac.yml']
   # Botão "Run workflow" na aba Actions (aparece quando este arquivo estiver
   # na branch principal).
   workflow_dispatch:

@@ -20,6 +20,12 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    # Com "bash" pedido de forma explícita, um comando que falha no meio de
+    # um "a | b" derruba o passo (sem isso, a falha passaria despercebida).
+    shell: bash
+
 concurrency:
   group: build-mac-${{ github.ref }}
   cancel-in-progress: true
@@ -72,6 +78,106 @@ jobs:
             exit 1
           fi
 
+      # Confere, antes de gerar o app, se o certificado abre com a senha e se
+      # o macOS deste runner aceita importá-lo. Se o formato do .p12 não for
+      # aceito, regrava o mesmo certificado em outro formato e usa esse.
+      - name: Preparar o certificado
+        if: steps.credenciais.outputs.assinar == 'true'
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: |
+          exec > >(tee "$RUNNER_TEMP/passo-certificado.log") 2>&1
+          dir="$RUNNER_TEMP/certificado"
+          mkdir -p "$dir"
+          relatorio="$dir/relatorio.txt"
+          : > "$relatorio"
+          diz() { echo "$*" | tee -a "$relatorio"; }
+          # O relatório vira uma anotação na página da execução (não contém
+          # nenhum segredo: só tamanhos, impressões digitais e resultados).
+          publicar() {
+            node -e 'const t = require("fs").readFileSync(process.argv[1], "utf8").trim(); if (t) console.log("::notice title=Certificado::" + t.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A"));' "$relatorio" || true
+          }
+          trap publicar EXIT
+
+          SENHA_P12="$(printf '%s' "$CSC_KEY_PASSWORD" | tr -d '\r\n')"
+          export SENHA_P12
+          echo "::add-mask::$SENHA_P12"
+
+          node -e '
+            const fs = require("fs");
+            const crypto = require("crypto");
+            const bruto = process.env.CSC_LINK || "";
+            const limpo = bruto.replace(/\s+/g, "");
+            const dados = Buffer.from(limpo, "base64");
+            fs.writeFileSync(process.argv[1], dados);
+            console.log("CSC_LINK: " + bruto.length + " caracteres em " + bruto.split(/\r?\n/).length + " linha(s); só base64: " + /^[A-Za-z0-9+\/=]+$/.test(limpo));
+            console.log("Certificado: " + dados.length + " bytes, sha256 " + crypto.createHash("sha256").update(dados).digest("hex").slice(0, 16) + ", formato PKCS#12: " + (dados[0] === 0x30 && dados[1] === 0x82));
+          ' "$dir/original.p12" | tee -a "$relatorio"
+          diz "openssl do runner: $(openssl version)"
+
+          if ! erro="$(openssl pkcs12 -in "$dir/original.p12" -passin env:SENHA_P12 -noout 2>&1)"; then
+            diz "O certificado NÃO abre com a senha: $(printf '%s' "$erro" | tail -1)"
+            echo "::error title=Certificado e senha não combinam::O conteúdo do secret CSC_LINK não abre com a senha do secret CSC_KEY_PASSWORD. Cole os dois de novo, cada um só com a linha do valor."
+            exit 1
+          fi
+          diz "O certificado abre com a senha."
+
+          # Importa o arquivo num chaveiro descartável: é o mesmo comando que
+          # o electron-builder usa na hora de assinar.
+          importa() {
+            local chaveiro="$dir/teste.keychain-db" resultado=0
+            security delete-keychain "$chaveiro" > /dev/null 2>&1 || true
+            if ! security create-keychain -p teste "$chaveiro" > "$dir/import.txt" 2>&1 \
+              || ! security unlock-keychain -p teste "$chaveiro" >> "$dir/import.txt" 2>&1; then
+              diz "  não consegui criar o chaveiro de teste: $(tail -1 "$dir/import.txt")"
+              return 1
+            fi
+            if security import "$1" -k "$chaveiro" -P "$SENHA_P12" -T /usr/bin/codesign > "$dir/import.txt" 2>&1; then
+              diz "  identidades: $(security find-identity -p codesigning "$chaveiro" 2>&1 | grep -E "identities found|CSSMERR" | tr -s ' \n' ' ')"
+            else
+              resultado=1
+              diz "  recusado: $(tail -1 "$dir/import.txt")"
+            fi
+            security delete-keychain "$chaveiro" > /dev/null 2>&1 || true
+            return $resultado
+          }
+          # Regrava o certificado em outro formato e testa. $1 = nome; o resto
+          # são as opções de formato do openssl.
+          regrava() {
+            local nome="$1"
+            shift
+            diz "Formato $nome:"
+            if ! openssl pkcs12 -export -in "$dir/tudo.pem" -out "$dir/$nome.p12" -passout env:SENHA_P12 "$@" > "$dir/export.txt" 2>&1; then
+              diz "  o openssl do runner não gera esse formato: $(tail -1 "$dir/export.txt")"
+              return 1
+            fi
+            importa "$dir/$nome.p12"
+          }
+
+          escolhido=""
+          diz "Formato original:"
+          if importa "$dir/original.p12"; then
+            escolhido="$dir/original.p12"
+          else
+            openssl pkcs12 -in "$dir/original.p12" -passin env:SENHA_P12 -nodes -out "$dir/tudo.pem" > /dev/null 2>&1
+            for formato in "padrao" "aes-sha256 -keypbe AES-256-CBC -certpbe AES-256-CBC -macalg sha256" "3des-sha1 -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1"; do
+              # shellcheck disable=SC2086
+              if regrava $formato; then
+                escolhido="$dir/${formato%% *}.p12"
+                break
+              fi
+            done
+            rm -f "$dir/tudo.pem"
+          fi
+
+          if [ -z "$escolhido" ]; then
+            echo "::error title=Certificado recusado pelo macOS::O certificado abre com a senha, mas o macOS deste runner não aceitou importá-lo em nenhum formato."
+            exit 1
+          fi
+          diz "Certificado usado no build: ${escolhido##*/}"
+          echo "P12_PRONTO=$escolhido" >> "$GITHUB_ENV"
+
       - name: Instalar dependências
         run: npm ci
 
@@ -82,9 +188,10 @@ jobs:
         if: steps.credenciais.outputs.assinar == 'true'
         env:
           # O electron-builder lê estas variáveis: o certificado Developer ID
-          # (arquivo .p12 em base64) com a senha, e a chave de API do App
-          # Store Connect usada na notarização.
-          CSC_LINK: ${{ secrets.CSC_LINK }}
+          # (o arquivo .p12 deixado pronto pelo passo "Preparar o certificado")
+          # com a senha, e a chave de API do App Store Connect usada na
+          # notarização.
+          CSC_LINK: ${{ env.P12_PRONTO }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
@@ -97,13 +204,12 @@ jobs:
           export APPLE_API_KEY="$RUNNER_TEMP/AuthKey.p8"
 
           # Um espaço ou uma quebra de linha colados por engano junto com um
-          # secret fariam o certificado ou a chave serem recusados.
+          # secret fariam a senha ou a chave serem recusadas.
           sem_espacos() { printf '%s' "$1" | tr -d '[:space:]'; }
-          CSC_LINK="$(sem_espacos "$CSC_LINK")"
           CSC_KEY_PASSWORD="$(printf '%s' "$CSC_KEY_PASSWORD" | tr -d '\r\n')"
           APPLE_API_KEY_ID="$(sem_espacos "$APPLE_API_KEY_ID")"
           APPLE_API_ISSUER="$(sem_espacos "$APPLE_API_ISSUER")"
-          for valor in "$CSC_LINK" "$CSC_KEY_PASSWORD" "$APPLE_API_KEY_ID" "$APPLE_API_ISSUER"; do
+          for valor in "$CSC_KEY_PASSWORD" "$APPLE_API_KEY_ID" "$APPLE_API_ISSUER"; do
             echo "::add-mask::$valor"
           done
 

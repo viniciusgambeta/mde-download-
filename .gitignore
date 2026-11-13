@@ -8,3 +8,11 @@ vendor/cobalt/
 # Arquivos locais
 *.log
 __pycache__/
+
+# Página de apresentação do projeto: é publicada à parte (na Vercel) e não
+# faz parte deste repositório.
+site/
+
+# Configuração local das ferramentas de desenvolvimento
+.claude/
+.vercel/

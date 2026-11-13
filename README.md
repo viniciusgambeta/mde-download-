@@ -4,6 +4,8 @@ Cola o link, baixa. Um app para Windows que baixa vídeos, áudio, fotos e
 transcrições do YouTube, Instagram, TikTok, X e de mais de mil outros sites,
 com uma tela só: um campo para o link.
 
+**Site:** [downloader.medaumexemplo.com](https://downloader.medaumexemplo.com)
+
 ![Tela inicial](docs/tela-inicial.png)
 
 O app reconhece de qual rede é o link e que tipo de conteúdo ele tem, e já
@@ -23,7 +25,8 @@ mostra as ações que fazem sentido:
 
 ## Instalar
 
-Baixe o instalador mais recente na página de
+Baixe o instalador mais recente pelo
+[site](https://downloader.medaumexemplo.com) ou na página de
 [Releases](../../releases/latest) e execute.
 
 O instalador não é assinado digitalmente, então o Windows mostra um aviso do

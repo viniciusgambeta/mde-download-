@@ -95,19 +95,32 @@ jobs:
           # runner, que é apagada no fim da execução.
           printf '%s\n' "$APPLE_API_KEY_P8" | tr -d '\r' > "$RUNNER_TEMP/AuthKey.p8"
           export APPLE_API_KEY="$RUNNER_TEMP/AuthKey.p8"
-          npm run dist:mac
+
+          # Um espaço ou uma quebra de linha colados por engano junto com um
+          # secret fariam o certificado ou a chave serem recusados.
+          sem_espacos() { printf '%s' "$1" | tr -d '[:space:]'; }
+          CSC_LINK="$(sem_espacos "$CSC_LINK")"
+          CSC_KEY_PASSWORD="$(printf '%s' "$CSC_KEY_PASSWORD" | tr -d '\r\n')"
+          APPLE_API_KEY_ID="$(sem_espacos "$APPLE_API_KEY_ID")"
+          APPLE_API_ISSUER="$(sem_espacos "$APPLE_API_ISSUER")"
+          for valor in "$CSC_LINK" "$CSC_KEY_PASSWORD" "$APPLE_API_KEY_ID" "$APPLE_API_ISSUER"; do
+            echo "::add-mask::$valor"
+          done
+
+          npm run dist:mac 2>&1 | tee "$RUNNER_TEMP/passo-gerar.log"
 
       - name: Gerar sem assinatura (só para teste)
         if: steps.credenciais.outputs.assinar != 'true'
         # Assinatura "ad-hoc": o app abre, mas o macOS avisa que não conhece
         # quem fez e pede uma liberação manual.
-        run: npm run dist:mac -- -c.mac.identity=- -c.mac.hardenedRuntime=false
+        run: npm run dist:mac -- -c.mac.identity=- -c.mac.hardenedRuntime=false 2>&1 | tee "$RUNNER_TEMP/passo-gerar.log"
 
       - name: Conferir assinatura e notarização
         if: steps.credenciais.outputs.assinar == 'true'
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
+          exec > >(tee "$RUNNER_TEMP/passo-conferir.log") 2>&1
           equipe_esperada="$(printf '%s' "$APPLE_TEAM_ID" | tr -d '[:space:]')"
           for app in dist/mac*/*.app; do
             echo "== $app"
@@ -135,6 +148,7 @@ jobs:
       # e o servidor local do Cobalt.
       - name: Teste rápido do app gerado
         run: |
+          exec > >(tee "$RUNNER_TEMP/passo-teste.log") 2>&1
           # Uso: testar <pasta do .app> [comando na frente, ex.: arch -x86_64]
           testar() {
             local app helper ffmpeg cobalt porta
@@ -175,3 +189,21 @@ jobs:
           else
             echo "Sem Rosetta neste runner: a versão Intel não foi executada aqui."
           fi
+
+      # Se um dos passos acima falhar, o fim do registro dele vira uma anotação
+      # no topo da página da execução: dá para ver o erro sem abrir o log.
+      - name: Resumir a falha
+        if: failure()
+        run: |
+          registro="$(ls -t "$RUNNER_TEMP"/passo-*.log 2> /dev/null | head -1 || true)"
+          if [ -z "$registro" ]; then exit 0; fi
+          node -e '
+            const fs = require("fs");
+            const linhas = fs.readFileSync(process.argv[1], "utf8")
+              .replace(/\x1b\[[0-9;]*m/g, "")
+              .split(/\r?\n/)
+              .filter((linha) => linha.trim());
+            const fim = linhas.join("\n").slice(-3000);
+            const codificado = fim.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+            console.log("::error title=Fim do registro do passo que falhou::" + codificado);
+          ' "$registro"

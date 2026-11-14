@@ -379,7 +379,7 @@ jobs:
 
           # Uso: testar <arquivo .dmg> [comando na frente, ex.: arch -x86_64]
           testar() {
-            local dmg nome volume origem app helper ffmpeg cobalt porta respondeu executavel pid
+            local dmg nome volume origem app helper ffmpeg cobalt porta respondeu executavel pid janela
             dmg="$1"; shift
             nome="$(basename "$dmg" .dmg)"
             volume="$RUNNER_TEMP/volume-$nome"
@@ -401,17 +401,21 @@ jobs:
             ELECTRON_RUN_AS_NODE=1 "$@" "$helper" -e "console.log('modo Node:', process.versions.node, process.arch)"
             "$@" "$ffmpeg" -version | sed -n 1p
 
-            # O Cobalt fica no ar enquanto o "sleep" segurar a entrada dele.
+            # O Cobalt fica no ar enquanto o "sleep" segurar a entrada dele. A
+            # espera é longa porque, pelo Rosetta, a primeira execução demora:
+            # o sistema traduz o programa inteiro antes de rodar.
             ( cd "$cobalt" && export API_URL="http://127.0.0.1:$porta/" API_PORT="$porta" API_LISTEN_ADDRESS=127.0.0.1 \
-              && sleep 25 | ELECTRON_RUN_AS_NODE=1 "$@" "$helper" run.mjs > "$RUNNER_TEMP/cobalt.log" 2>&1 ) &
+              && sleep 123 | ELECTRON_RUN_AS_NODE=1 "$@" "$helper" run.mjs > "$RUNNER_TEMP/cobalt.log" 2>&1 ) &
             respondeu=0
-            for tentativa in $(seq 1 40); do
+            for tentativa in $(seq 1 200); do
               if curl -fsS -H "accept: application/json" "http://127.0.0.1:$porta/" > /dev/null 2>&1; then
                 respondeu=1
                 break
               fi
               sleep 0.5
             done
+            # Sem o "sleep", a entrada do Cobalt fecha e ele encerra.
+            pkill -f "sleep 123" || true
             wait || true
             if [ "$respondeu" != 1 ]; then
               echo "::error::O Cobalt não respondeu dentro do app."
@@ -420,21 +424,27 @@ jobs:
             fi
             echo "Cobalt respondeu."
 
-            # O app de verdade: tem de continuar aberto e criar a janela (o
-            # processo "Helper (Renderer)" é quem desenha a janela).
+            # O app de verdade: tem de criar a janela (o processo "Helper
+            # (Renderer)" é quem a desenha) e continuar aberto com ela por 15
+            # segundos. Damos até 90 segundos para isso acontecer.
             executavel=("$app"/Contents/MacOS/*)
             "$@" "${executavel[0]}" > "$RUNNER_TEMP/app-$nome.log" 2>&1 &
             pid=$!
-            for segundo in $(seq 1 25); do
+            janela=0
+            for segundo in $(seq 1 90); do
               sleep 1
               kill -0 "$pid" 2> /dev/null || break
+              if pgrep -f "instalado-$nome/.*Helper \(Renderer\)" > /dev/null; then
+                janela=$((janela + 1))
+              fi
+              if [ "$janela" -ge 15 ]; then break; fi
             done
             if ! kill -0 "$pid" 2> /dev/null; then
               echo "::error title=O app fecha ao abrir::Instalado a partir de $nome.dmg, o app não ficou aberto."
               tail -n 30 "$RUNNER_TEMP/app-$nome.log" || true
               return 1
             fi
-            if ! pgrep -f "instalado-$nome/.*Helper \(Renderer\)" > /dev/null; then
+            if [ "$janela" -lt 15 ]; then
               echo "::error title=O app abriu sem janela::Instalado a partir de $nome.dmg, o app ficou aberto, mas não criou a janela."
               kill "$pid" 2> /dev/null || true
               return 1

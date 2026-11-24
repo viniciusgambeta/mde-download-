@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('api', {
 
     openFile: (file) => ipcRenderer.invoke('file:open', file),
     showFile: (file) => ipcRenderer.invoke('file:show', file),
+    copyText: (file) => ipcRenderer.invoke('file:copy-text', file),
     dragJob: (id) => ipcRenderer.send('file:drag', id),
     openFolder: () => ipcRenderer.invoke('folder:open'),
 

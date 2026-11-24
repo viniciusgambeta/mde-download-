@@ -287,11 +287,20 @@ function upsertRow(job) {
     row.subIcon.innerHTML = job.status === 'done' ? ICONS.check : job.status === 'error' ? ICONS.alert : '';
     row.subIcon.hidden = !row.subIcon.innerHTML;
 
-    const actionsKey = `${job.status}:${job.errorCode || ''}:${job.action}`;
+    const actionsKey = `${job.status}:${job.errorCode || ''}:${job.action}:${job.textFile || ''}`;
     if (row.actionsKey !== actionsKey) {
         row.actionsKey = actionsKey;
         row.actions.replaceChildren();
         if (job.status === 'done') {
+            if (job.textFile) {
+                const copy = iconButton(ICONS.copy, 'Copiar texto', async () => {
+                    if (!(await api.copyText(row.job.textFile))) return;
+                    copy.innerHTML = ICONS.check;
+                    copy.title = 'Copiado!';
+                    setTimeout(() => { copy.innerHTML = ICONS.copy; copy.title = 'Copiar texto'; }, 1500);
+                });
+                row.actions.append(copy);
+            }
             row.actions.append(iconButton(ICONS.folder, 'Mostrar na pasta', () => api.showFile(row.job.files[0])));
         }
         if (job.status === 'error') {

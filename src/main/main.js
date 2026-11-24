@@ -247,6 +247,11 @@ function registerIpc() {
     // Só abrimos/arrastamos arquivos que o próprio app baixou.
     ipcMain.handle('file:open', (_e, file) => (jobs.ownsFile(file) ? shell.openPath(file) : null));
     ipcMain.handle('file:show', (_e, file) => (jobs.ownsFile(file) ? shell.showItemInFolder(file) : null));
+    ipcMain.handle('file:copy-text', (_e, file) => {
+        if (!jobs.ownsFile(file) || !/\.txt$/i.test(file)) return false;
+        clipboard.writeText(fs.readFileSync(file, 'utf8'));
+        return true;
+    });
     ipcMain.on('file:drag', (event, id) => {
         const job = jobs.list().find((j) => j.id === id);
         const files = job ? job.files.filter((f) => fs.existsSync(f)) : [];

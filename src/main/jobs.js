@@ -78,6 +78,15 @@ async function makeThumb(file) {
     }
 }
 
+// Transcrição curta ganha botão "Copiar texto" na lista (acima disso, só abrir o arquivo).
+const COPY_MAX_BYTES = 20000;
+function copyableText(files) {
+    const txt = files.find((f) => /\.txt$/i.test(f));
+    try {
+        return txt && fs.statSync(txt).size <= COPY_MAX_BYTES ? txt : null;
+    } catch { return null; }
+}
+
 function init(emitter) {
     emit = emitter;
     // O registro recomeça quando passa de 1 MB.
@@ -90,6 +99,7 @@ function init(emitter) {
             job.files = (job.files || []).filter((f) => fs.existsSync(f));
             if (!job.files.length) continue;
             job.thumb = null;
+            job.textFile = copyableText(job.files);
             jobs.set(job.id, job);
             makeThumb(job.files[0]).then((thumb) => {
                 if (thumb && jobs.has(job.id)) { job.thumb = thumb; send(job); }
@@ -258,6 +268,7 @@ async function runJob(job) {
             job.kindLabel = job.actionLabel = job.files.length > 1 ? 'Fotos' : 'Foto';
         }
         job.thumb = await makeThumb(job.files.find((f) => /\.(jpe?g|png|webp|mp4|mov|mkv|webm)$/i.test(f)) || job.files[0]);
+        job.textFile = copyableText(job.files);
         Object.assign(job, { status: 'done', progress: 1, detail: '' });
         saveHistory();
         // Abre o Explorer já com o arquivo selecionado (dá pra desligar nos ajustes).

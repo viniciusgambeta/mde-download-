@@ -496,6 +496,7 @@ $('#open-folder').innerHTML = ICONS.folder;
 els.openSettings.innerHTML = ICONS.sliders;
 els.clear.innerHTML = ICONS.close;
 $('#field-icon').innerHTML = ICONS.link;
+$('#pick-file').innerHTML = ICONS.filePlus;
 els.sites.innerHTML = ['youtube', 'instagram', 'tiktok', 'x', 'generic'].map((key) => BADGES[key]).join('');
 
 els.url.addEventListener('input', onInput);
@@ -555,8 +556,22 @@ window.addEventListener('dragleave', () => els.palette.classList.remove('is-drag
 window.addEventListener('drop', (event) => {
     event.preventDefault();
     els.palette.classList.remove('is-dragover');
+    // Arquivo de áudio/vídeo do computador: transcreve direto, sem baixar.
+    const dropped = [...event.dataTransfer.files].map((f) => api.local.pathFor(f)).filter(Boolean);
+    if (dropped.length) { api.local.start(dropped).then((error) => error && showLocalError(error)); return; }
     const text = event.dataTransfer.getData('text/uri-list') || event.dataTransfer.getData('text/plain');
     if (text) setLink(text.split(/\r?\n/)[0]);
+});
+
+function showLocalError(message) {
+    els.result.hidden = false;
+    els.result.replaceChildren(el('div', 'result-note', message));
+    setTimeout(() => { if (!detection) els.result.hidden = true; }, 4000);
+}
+$('#pick-file').addEventListener('click', async (event) => {
+    event.preventDefault();
+    const error = await api.local.pick();
+    if (error) showLocalError(error);
 });
 
 api.on('job', upsertRow);

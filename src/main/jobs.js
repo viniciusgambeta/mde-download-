@@ -119,6 +119,9 @@ function plan(job, det, connected) {
     const cb = (mode, extra = {}) => (ctx) => cobalt.run({ url: det.url, mode, quality, dir, baseName, ...extra }, ctx);
     const audio = job.action === 'audio';
 
+    // Arquivo do próprio computador: só o Whisper, sem baixar nada.
+    if (job.localFile) return [(ctx) => whisper.transcribe({ file: job.localFile, id: 'local', platform: 'local', dir }, ctx)];
+
     // Transcrição: primeiro a legenda que a plataforma já tem pronta. O
     // Whisper entra quando o usuário pede (action "whisper") ou quando a
     // plataforma não oferece legenda nenhuma, caso dos Reels.
@@ -203,7 +206,7 @@ async function runJob(job) {
     };
 
     try {
-        let det = detect(job.url);
+        let det = job.localFile ? { ok: true, platform: 'local' } : detect(job.url);
         if (!det.ok) throw new Error(det.reason || 'Link inválido.');
         if (det.kind === 'share') {
             det = await resolveShare(det, signal);
@@ -327,6 +330,40 @@ function start({ url, action, quality }) {
     return job;
 }
 
+// Formatos de áudio/vídeo aceitos na transcrição de arquivo local.
+const LOCAL_EXT = /\.(mp3|m4a|aac|wav|ogg|opus|flac|wma|mp4|mkv|mov|webm|avi|m4v)$/i;
+
+// Transcreve um arquivo do computador (arrastado ou escolhido). Nunca mexe no original.
+function startLocal(file) {
+    const ok = typeof file === 'string' && path.isAbsolute(file) && LOCAL_EXT.test(file)
+        && fs.existsSync(file) && fs.statSync(file).isFile();
+    if (!ok) throw new Error('Esse arquivo não é um áudio ou vídeo que eu consiga transcrever.');
+    const job = {
+        id: crypto.randomUUID(),
+        url: file,
+        localFile: file,
+        platform: 'local',
+        site: 'Arquivo local',
+        kindLabel: 'Arquivo',
+        action: 'whisper',
+        actionLabel: 'Transcrição',
+        quality: settings.load().quality,
+        status: 'queued',
+        title: path.parse(file).name,
+        progress: null,
+        detail: '',
+        files: [],
+        thumb: null,
+        error: null,
+        errorCode: null,
+        createdAt: Date.now(),
+    };
+    jobs.set(job.id, job);
+    send(job);
+    pump();
+    return job;
+}
+
 // action "whisper": refaz uma transcrição que não achou legenda pronta,
 // desta vez transcrevendo o áudio com o Whisper.
 function retry(id, action) {
@@ -362,4 +399,4 @@ function cancelAll() {
 const list = () => [...jobs.values()];
 const ownsFile = (file) => list().some((j) => j.files.includes(file));
 
-module.exports = { init, start, retry, remove, clearFinished, cancelAll, list, ownsFile };
+module.exports = { init, start, startLocal, LOCAL_EXT, retry, remove, clearFinished, cancelAll, list, ownsFile };

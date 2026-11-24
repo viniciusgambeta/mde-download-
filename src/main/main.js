@@ -247,6 +247,23 @@ function registerIpc() {
     // Só abrimos/arrastamos arquivos que o próprio app baixou.
     ipcMain.handle('file:open', (_e, file) => (jobs.ownsFile(file) ? shell.openPath(file) : null));
     ipcMain.handle('file:show', (_e, file) => (jobs.ownsFile(file) ? shell.showItemInFolder(file) : null));
+    // Transcrição de arquivo local: arrastado (caminhos vêm da interface) ou escolhido aqui.
+    const startLocalFiles = (files) => {
+        const errors = [];
+        for (const file of [].concat(files || [])) {
+            try { jobs.startLocal(file); } catch (err) { errors.push(err.message); }
+        }
+        return errors[0] || null;
+    };
+    ipcMain.handle('local:start', (_e, files) => startLocalFiles(files));
+    ipcMain.handle('local:pick', async () => {
+        const picked = await dialog.showOpenDialog(win, {
+            title: 'Transcrever arquivo',
+            filters: [{ name: 'Áudio e vídeo', extensions: jobs.LOCAL_EXT.source.match(/\(([^)]+)\)/)[1].split('|') }],
+            properties: ['openFile', 'multiSelections'],
+        });
+        return picked.canceled ? null : startLocalFiles(picked.filePaths);
+    });
     ipcMain.on('file:drag', (event, id) => {
         const job = jobs.list().find((j) => j.id === id);
         const files = job ? job.files.filter((f) => fs.existsSync(f)) : [];

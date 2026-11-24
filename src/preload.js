@@ -1,7 +1,7 @@
 // Ponte entre a interface e o processo principal. A interface só enxerga
 // estas funções; ela não tem acesso direto a arquivos nem ao sistema.
 
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 const EVENTS = new Set(['job', 'job-removed', 'focus', 'whisper']);
 
@@ -16,6 +16,12 @@ contextBridge.exposeInMainWorld('api', {
         retry: (id, action) => ipcRenderer.invoke('jobs:retry', id, action),
         remove: (id) => ipcRenderer.invoke('jobs:remove', id),
         clear: () => ipcRenderer.invoke('jobs:clear'),
+    },
+
+    local: {
+        start: (files) => ipcRenderer.invoke('local:start', files),
+        pick: () => ipcRenderer.invoke('local:pick'),
+        pathFor: (file) => webUtils.getPathForFile(file),
     },
 
     openFile: (file) => ipcRenderer.invoke('file:open', file),

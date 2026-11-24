@@ -371,7 +371,8 @@ async function fetchAudio({ url, work }, ctx) {
 }
 
 // opts: { url, id, platform, dir }
-async function transcribe({ url, id, platform, dir }, ctx) {
+// Com `file`, transcreve um arquivo do próprio computador (sem baixar nada).
+async function transcribe({ url, id, platform, dir, file }, ctx) {
     ctx.progress(null, 'Preparando Whisper');
     const command = await findPython();
     if (!command && !cppInstalled()) {
@@ -382,7 +383,7 @@ async function transcribe({ url, id, platform, dir }, ctx) {
     fs.mkdirSync(workRoot, { recursive: true });
     const work = fs.mkdtempSync(path.join(workRoot, 'w-'));
     try {
-        const audio = await fetchAudio({ url, work }, ctx);
+        const audio = file ? { file, title: path.parse(file).name } : await fetchAudio({ url, work }, ctx);
         ctx.progress(null, 'Na fila do Whisper');
         const cues = await exclusive(() => (command ? runPython(command, audio.file, ctx) : runCpp(audio.file, work, ctx)));
         if (!cues.length) {
@@ -393,9 +394,9 @@ async function transcribe({ url, id, platform, dir }, ctx) {
         const files = subtitles.write({
             cues,
             dir,
-            name: audio.title ? `${audio.title} [${id}]` : `${platform}_${id}`,
+            name: file ? audio.title : audio.title ? `${audio.title} [${id}]` : `${platform}_${id}`,
             title,
-            url,
+            url: file ? null : url,
             source: 'transcrição automática (Whisper)',
         });
         return { files, title };
